@@ -1,40 +1,57 @@
-// Package agent is the resident daemon: the "brain" that will host the
-// model loop, tools, safety gate and patrol. M0 ships only a skeleton
-// whose "brain" echoes input back, proving the transport round-trip
-// without any model, tool, or system access.
+// Package agent is the resident daemon: the "brain" that hosts the model
+// loop and (in later milestones) tools, safety gate and patrol. M1 wires
+// a real model provider behind the conversation; there is still no tool
+// execution or system access.
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 
+	"github.com/areming/ops-agent/internal/config"
+	"github.com/areming/ops-agent/internal/model"
 	"github.com/areming/ops-agent/internal/transport"
 )
 
-// Serve listens on the unix socket at socketPath and serves connections
-// until the listener errors or is closed.
+// Serve builds the model provider from configuration, then listens on
+// the unix socket and serves connections until the listener errors.
 func Serve(socketPath string) error {
+	cfg := config.Load()
+	if cfg.APIKey == "" {
+		return fmt.Errorf("OPSAGENT_API_KEY is not set")
+	}
+	prov, err := model.New(cfg.Provider, cfg.APIKey, cfg.BaseURL, cfg.Model)
+	if err != nil {
+		return err
+	}
+
 	ln, err := transport.Listen(socketPath)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
-	log.Printf("opsagent serve: listening on %s", socketPath)
+	log.Printf("opsagent serve: listening on %s (provider=%s model=%s)", socketPath, prov.Name(), prov.Model())
 
 	for {
 		nc, err := ln.Accept()
 		if err != nil {
 			return err
 		}
-		go handle(nc)
+		go handle(nc, prov)
 	}
 }
 
-func handle(nc net.Conn) {
+func handle(nc net.Conn, prov model.Provider) {
 	defer nc.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	conn := transport.NewConn(nc)
+	sess := &session{}
 	for {
 		f, err := conn.ReadFrame()
 		if err != nil {
@@ -52,23 +69,12 @@ func handle(nc net.Conn) {
 			writeError(conn, "decode payload: "+err.Error())
 			continue
 		}
-		echo(conn, text)
-	}
-}
-
-// echo is the M0 stand-in for the agent loop: it streams the input back
-// rune by rune as assistant deltas, then signals Done.
-func echo(conn *transport.Conn, text string) {
-	for _, r := range text {
-		df, err := transport.TextFrame(transport.TypeAssistantDelta, string(r))
-		if err != nil {
-			return
-		}
-		if err := conn.WriteFrame(df); err != nil {
+		sess.addUser(text)
+		if err := runTurn(ctx, conn, prov, sess); err != nil {
+			log.Printf("turn: %v", err)
 			return
 		}
 	}
-	_ = conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
 }
 
 func writeError(conn *transport.Conn, msg string) {
