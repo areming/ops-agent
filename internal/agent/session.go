@@ -17,14 +17,19 @@ func (s *session) addUser(text string) {
 	s.msgs = append(s.msgs, model.Message{Role: model.RoleUser, Content: text})
 }
 
-func (s *session) addAssistant(text string) {
-	s.msgs = append(s.msgs, model.Message{Role: model.RoleAssistant, Content: text})
-}
-
-func (s *session) addAssistantWithCalls(text string, calls []model.ToolCall) {
+func (s *session) addAssistant(text, reasoning string) {
 	s.msgs = append(s.msgs, model.Message{
 		Role:      model.RoleAssistant,
 		Content:   text,
+		Reasoning: reasoning,
+	})
+}
+
+func (s *session) addAssistantWithCalls(text, reasoning string, calls []model.ToolCall) {
+	s.msgs = append(s.msgs, model.Message{
+		Role:      model.RoleAssistant,
+		Content:   text,
+		Reasoning: reasoning,
 		ToolCalls: calls,
 	})
 }

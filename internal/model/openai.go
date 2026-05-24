@@ -96,8 +96,9 @@ func streamOpenAI(ctx context.Context, r io.Reader, ch chan<- ChatEvent) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
 						Function struct {
@@ -112,6 +113,9 @@ func streamOpenAI(ctx context.Context, r io.Reader, ch chan<- ChatEvent) {
 			continue
 		}
 		d := chunk.Choices[0].Delta
+		if d.ReasoningContent != "" && !send(ctx, ch, ChatEvent{Type: EventReasoningDelta, Text: d.ReasoningContent}) {
+			return
+		}
 		if d.Content != "" && !send(ctx, ch, ChatEvent{Type: EventTextDelta, Text: d.Content}) {
 			return
 		}
@@ -178,6 +182,11 @@ func buildOpenAIMessages(req ChatRequest) []map[string]any {
 			})
 		case RoleAssistant:
 			am := map[string]any{"role": "assistant", "content": m.Content}
+			// Thinking models require their prior reasoning_content to be
+			// echoed back; absent for ordinary models, so never sent then.
+			if m.Reasoning != "" {
+				am["reasoning_content"] = m.Reasoning
+			}
 			if len(m.ToolCalls) > 0 {
 				tcs := make([]map[string]any, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {

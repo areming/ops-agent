@@ -103,6 +103,70 @@ data: [DONE]
 	}
 }
 
+// TestOpenAIStreamChatReasoning checks that streamed reasoning_content
+// (a thinking-model field) is surfaced as EventReasoningDelta, separate
+// from the visible text.
+func TestOpenAIStreamChatReasoning(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"reasoning_content":"let me "}}]}
+
+data: {"choices":[{"delta":{"reasoning_content":"think"}}]}
+
+data: {"choices":[{"delta":{"content":"answer"}}]}
+
+data: [DONE]
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI("k", srv.URL, "deepseek-v4-pro")
+	ch, err := p.StreamChat(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+
+	var reasoning, text strings.Builder
+	for ev := range ch {
+		switch ev.Type {
+		case EventReasoningDelta:
+			reasoning.WriteString(ev.Text)
+		case EventTextDelta:
+			text.WriteString(ev.Text)
+		case EventError:
+			t.Fatalf("unexpected error event: %v", ev.Err)
+		}
+	}
+	if reasoning.String() != "let me think" {
+		t.Errorf("reasoning = %q, want %q", reasoning.String(), "let me think")
+	}
+	if text.String() != "answer" {
+		t.Errorf("text = %q, want %q", text.String(), "answer")
+	}
+}
+
+// TestBuildOpenAIMessagesReasoning checks reasoning_content is replayed on
+// an assistant message that has it, and omitted when it is empty.
+func TestBuildOpenAIMessagesReasoning(t *testing.T) {
+	msgs := buildOpenAIMessages(ChatRequest{Messages: []Message{
+		{Role: RoleAssistant, Content: "a", Reasoning: "because"},
+		{Role: RoleAssistant, Content: "b"},
+	}})
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if got := msgs[0]["reasoning_content"]; got != "because" {
+		t.Errorf("msg[0] reasoning_content = %v, want %q", got, "because")
+	}
+	if _, ok := msgs[1]["reasoning_content"]; ok {
+		t.Error("msg[1] should not carry reasoning_content when empty")
+	}
+}
+
 // TestOpenAIStreamChatHTTPError surfaces a non-200 as a setup error.
 func TestOpenAIStreamChatHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

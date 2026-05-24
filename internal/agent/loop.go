@@ -34,7 +34,7 @@ func runTurn(ctx context.Context, conn *transport.Conn, prov model.Provider, reg
 			return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
 		}
 
-		var text strings.Builder
+		var text, reasoning strings.Builder
 		var calls []model.ToolCall
 		for ev := range ch {
 			switch ev.Type {
@@ -47,6 +47,9 @@ func runTurn(ctx context.Context, conn *transport.Conn, prov model.Provider, reg
 				if werr := conn.WriteFrame(df); werr != nil {
 					return werr
 				}
+			case model.EventReasoningDelta:
+				// Captured for replay to thinking models; not shown yet.
+				reasoning.WriteString(ev.Text)
 			case model.EventToolCall:
 				calls = append(calls, *ev.Tool)
 			case model.EventError:
@@ -55,11 +58,11 @@ func runTurn(ctx context.Context, conn *transport.Conn, prov model.Provider, reg
 		}
 
 		if len(calls) == 0 {
-			sess.addAssistant(text.String())
+			sess.addAssistant(text.String(), reasoning.String())
 			return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
 		}
 
-		sess.addAssistantWithCalls(text.String(), calls)
+		sess.addAssistantWithCalls(text.String(), reasoning.String(), calls)
 		for _, call := range calls {
 			result := execute(ctx, conn, reg, store, call)
 			sess.addToolResult(call.ID, result)

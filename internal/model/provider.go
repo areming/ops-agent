@@ -33,6 +33,10 @@ type Message struct {
 	ToolCalls []ToolCall
 	// ToolCallID links a RoleTool message back to the ToolCall it answers.
 	ToolCallID string
+	// Reasoning carries a thinking model's reasoning_content. It must be
+	// replayed to the API on the next turn for such models; it stays empty
+	// for non-thinking models and is then never sent.
+	Reasoning string
 }
 
 // Tool describes a callable tool exposed to the model.
@@ -55,10 +59,14 @@ const (
 	EventToolCall
 	EventDone
 	EventError
+	// EventReasoningDelta carries a thinking model's streamed
+	// reasoning_content (DeepSeek extension). Text holds the fragment.
+	EventReasoningDelta
 )
 
 // ChatEvent is one item in a streaming response. Text is set for
-// EventTextDelta; Tool for EventToolCall; Err for EventError.
+// EventTextDelta and EventReasoningDelta; Tool for EventToolCall; Err for
+// EventError.
 type ChatEvent struct {
 	Type EventType
 	Text string
