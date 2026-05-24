@@ -13,7 +13,9 @@ import (
 	"net"
 
 	"github.com/areming/ops-agent/internal/config"
+	"github.com/areming/ops-agent/internal/memory"
 	"github.com/areming/ops-agent/internal/model"
+	"github.com/areming/ops-agent/internal/tools"
 	"github.com/areming/ops-agent/internal/transport"
 )
 
@@ -29,6 +31,14 @@ func Serve(socketPath string) error {
 		return err
 	}
 
+	store, err := memory.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	reg := tools.NewRegistry(tools.Shell{}, tools.ReadFile{}, tools.WriteFile{})
+
 	ln, err := transport.Listen(socketPath)
 	if err != nil {
 		return err
@@ -41,11 +51,11 @@ func Serve(socketPath string) error {
 		if err != nil {
 			return err
 		}
-		go handle(nc, prov)
+		go handle(nc, prov, reg, store)
 	}
 }
 
-func handle(nc net.Conn, prov model.Provider) {
+func handle(nc net.Conn, prov model.Provider, reg *tools.Registry, store *memory.Store) {
 	defer nc.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -70,7 +80,7 @@ func handle(nc net.Conn, prov model.Provider) {
 			continue
 		}
 		sess.addUser(text)
-		if err := runTurn(ctx, conn, prov, sess); err != nil {
+		if err := runTurn(ctx, conn, prov, reg, store, sess); err != nil {
 			log.Printf("turn: %v", err)
 			return
 		}

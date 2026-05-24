@@ -61,6 +61,48 @@ data: [DONE]
 	}
 }
 
+// TestOpenAIStreamChatToolCall checks that tool_call fragments split
+// across chunks are accumulated into one EventToolCall.
+func TestOpenAIStreamChatToolCall(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"run_command","arguments":"{\"comm"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\":\"ls\"}"}}]}}]}
+
+data: [DONE]
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer srv.Close()
+
+	p := NewOpenAI("k", srv.URL, "m")
+	ch, err := p.StreamChat(context.Background(), ChatRequest{
+		Messages: []Message{{Role: RoleUser, Content: "list files"}},
+		Tools:    []Tool{{Name: "run_command", Description: "run", Schema: []byte(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+
+	var got *ToolCall
+	for ev := range ch {
+		if ev.Type == EventToolCall {
+			got = ev.Tool
+		}
+	}
+	if got == nil {
+		t.Fatal("no tool call event")
+	}
+	if got.ID != "call_1" || got.Name != "run_command" {
+		t.Errorf("got id=%q name=%q", got.ID, got.Name)
+	}
+	if string(got.Arguments) != `{"command":"ls"}` {
+		t.Errorf("arguments = %s, want {\"command\":\"ls\"}", got.Arguments)
+	}
+}
+
 // TestOpenAIStreamChatHTTPError surfaces a non-200 as a setup error.
 func TestOpenAIStreamChatHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

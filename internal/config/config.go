@@ -3,13 +3,17 @@
 // milestone when there is more to configure.
 package config
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 type Config struct {
 	Provider string // openai | deepseek | anthropic
 	Model    string
 	APIKey   string
 	BaseURL  string // optional override for OpenAI-compatible/Anthropic
+	DBPath   string // SQLite state/audit database
 }
 
 // Load reads OPSAGENT_* environment variables.
@@ -19,6 +23,7 @@ func Load() Config {
 		Model:    os.Getenv("OPSAGENT_MODEL"),
 		APIKey:   os.Getenv("OPSAGENT_API_KEY"),
 		BaseURL:  os.Getenv("OPSAGENT_BASE_URL"),
+		DBPath:   getenv("OPSAGENT_DB", filepath.Join(os.TempDir(), "opsagent.db")),
 	}
 }
 

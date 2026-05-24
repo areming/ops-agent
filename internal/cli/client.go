@@ -1,6 +1,7 @@
-// Package cli is the thin local client. It renders the conversation and
-// forwards input; it holds no model or business logic. M0 provides a
-// line-based REPL; a richer TUI arrives later.
+// Package cli is the thin local client. It renders the conversation,
+// forwards input, and answers the agent's confirmation prompts; it holds
+// no model or business logic. M2 adds the confirm handshake; a richer TUI
+// arrives later.
 package cli
 
 import (
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/areming/ops-agent/internal/transport"
 )
@@ -52,8 +54,9 @@ func ConnectSSH(host, remoteSocket, remoteBin string) error {
 	return rerr
 }
 
-// repl reads a line, sends it as UserInput, then prints the streamed
-// reply until Done. EOF on stdin ends the session.
+// repl reads a line, sends it as UserInput, then handles the streamed
+// reply (text, tool activity, confirmations) until Done. EOF on stdin
+// ends the session.
 func repl(conn *transport.Conn) error {
 	fmt.Println("opsagent connected. type a message (Ctrl-D to quit).")
 	in := bufio.NewScanner(os.Stdin)
@@ -69,14 +72,14 @@ func repl(conn *transport.Conn) error {
 		if err := conn.WriteFrame(uf); err != nil {
 			return err
 		}
-		if err := drain(conn); err != nil {
+		if err := drain(conn, in); err != nil {
 			return err
 		}
 	}
 }
 
-// drain prints assistant deltas until a Done or Error frame.
-func drain(conn *transport.Conn) error {
+// drain handles frames for one turn until Done.
+func drain(conn *transport.Conn, in *bufio.Scanner) error {
 	for {
 		f, err := conn.ReadFrame()
 		if err != nil {
@@ -86,13 +89,40 @@ func drain(conn *transport.Conn) error {
 		case transport.TypeAssistantDelta:
 			s, _ := f.Text()
 			fmt.Print(s)
-		case transport.TypeDone:
-			fmt.Println()
-			return nil
+		case transport.TypeToolStart:
+			var p transport.ToolStartPayload
+			_ = f.Decode(&p)
+			fmt.Printf("\n▶ %s: %s\n", p.Tool, p.Command)
+		case transport.TypeConfirmRequest:
+			var p transport.ConfirmRequestPayload
+			_ = f.Decode(&p)
+			reply, err := transport.PayloadFrame(transport.TypeConfirmReply,
+				transport.ConfirmReplyPayload{Approved: askConfirm(in, p)})
+			if err != nil {
+				return err
+			}
+			if err := conn.WriteFrame(reply); err != nil {
+				return err
+			}
 		case transport.TypeError:
 			s, _ := f.Text()
 			fmt.Fprintf(os.Stderr, "\n[error] %s\n", s)
+			// keep reading; the turn still ends with Done
+		case transport.TypeDone:
+			fmt.Println()
 			return nil
 		}
 	}
+}
+
+// askConfirm shows the flagged action and reads a yes/no answer. EOF or
+// anything other than y/yes is treated as a denial.
+func askConfirm(in *bufio.Scanner, p transport.ConfirmRequestPayload) bool {
+	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  执行? [y/N] ",
+		p.Risk, p.Tool, p.Command, p.Reason)
+	if !in.Scan() {
+		return false
+	}
+	ans := strings.ToLower(strings.TrimSpace(in.Text()))
+	return ans == "y" || ans == "yes"
 }

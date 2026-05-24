@@ -36,18 +36,15 @@ func (o *OpenAI) Name() string  { return "openai" }
 func (o *OpenAI) Model() string { return o.model }
 
 func (o *OpenAI) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
-	msgs := make([]map[string]string, 0, len(req.Messages)+1)
-	if req.System != "" {
-		msgs = append(msgs, map[string]string{"role": "system", "content": req.System})
-	}
-	for _, m := range req.Messages {
-		msgs = append(msgs, map[string]string{"role": string(m.Role), "content": m.Content})
-	}
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":    o.model,
-		"messages": msgs,
+		"messages": buildOpenAIMessages(req),
 		"stream":   true,
-	})
+	}
+	if len(req.Tools) > 0 {
+		payload["tools"] = openAITools(req.Tools)
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -73,36 +70,135 @@ func (o *OpenAI) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatEv
 	go func() {
 		defer resp.Body.Close()
 		defer close(ch)
-		sse := newSSE(resp.Body)
-		for {
-			data, ok := sse.next()
-			if !ok {
-				break
-			}
-			var chunk struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-			}
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue // skip keep-alives / non-JSON lines
-			}
-			if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == "" {
-				continue
-			}
-			select {
-			case ch <- ChatEvent{Type: EventTextDelta, Text: chunk.Choices[0].Delta.Content}:
-			case <-ctx.Done():
-				return
-			}
-		}
-		if err := sse.err(); err != nil {
-			ch <- ChatEvent{Type: EventError, Err: err}
-			return
-		}
-		ch <- ChatEvent{Type: EventDone}
+		streamOpenAI(ctx, resp.Body, ch)
 	}()
 	return ch, nil
+}
+
+// toolAcc accumulates a streamed tool call whose id/name/arguments arrive
+// across multiple chunks.
+type toolAcc struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
+func streamOpenAI(ctx context.Context, r io.Reader, ch chan<- ChatEvent) {
+	sse := newSSE(r)
+	byIndex := map[int]*toolAcc{}
+	var order []int
+
+	for {
+		data, ok := sse.next()
+		if !ok {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil || len(chunk.Choices) == 0 {
+			continue
+		}
+		d := chunk.Choices[0].Delta
+		if d.Content != "" && !send(ctx, ch, ChatEvent{Type: EventTextDelta, Text: d.Content}) {
+			return
+		}
+		for _, tc := range d.ToolCalls {
+			acc := byIndex[tc.Index]
+			if acc == nil {
+				acc = &toolAcc{}
+				byIndex[tc.Index] = acc
+				order = append(order, tc.Index)
+			}
+			if tc.ID != "" {
+				acc.id = tc.ID
+			}
+			if tc.Function.Name != "" {
+				acc.name = tc.Function.Name
+			}
+			acc.args.WriteString(tc.Function.Arguments)
+		}
+	}
+	if err := sse.err(); err != nil {
+		send(ctx, ch, ChatEvent{Type: EventError, Err: err})
+		return
+	}
+	for _, idx := range order {
+		acc := byIndex[idx]
+		if !send(ctx, ch, ChatEvent{Type: EventToolCall, Tool: &ToolCall{
+			ID:        acc.id,
+			Name:      acc.name,
+			Arguments: rawOrEmpty(acc.args.String()),
+		}}) {
+			return
+		}
+	}
+	send(ctx, ch, ChatEvent{Type: EventDone})
+}
+
+func openAITools(ts []Tool) []map[string]any {
+	out := make([]map[string]any, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        t.Name,
+				"description": t.Description,
+				"parameters":  json.RawMessage(t.Schema),
+			},
+		})
+	}
+	return out
+}
+
+func buildOpenAIMessages(req ChatRequest) []map[string]any {
+	msgs := make([]map[string]any, 0, len(req.Messages)+1)
+	if req.System != "" {
+		msgs = append(msgs, map[string]any{"role": "system", "content": req.System})
+	}
+	for _, m := range req.Messages {
+		switch m.Role {
+		case RoleTool:
+			msgs = append(msgs, map[string]any{
+				"role":         "tool",
+				"tool_call_id": m.ToolCallID,
+				"content":      m.Content,
+			})
+		case RoleAssistant:
+			am := map[string]any{"role": "assistant", "content": m.Content}
+			if len(m.ToolCalls) > 0 {
+				tcs := make([]map[string]any, 0, len(m.ToolCalls))
+				for _, tc := range m.ToolCalls {
+					tcs = append(tcs, map[string]any{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      tc.Name,
+							"arguments": string(tc.Arguments),
+						},
+					})
+				}
+				am["tool_calls"] = tcs
+				if m.Content == "" {
+					am["content"] = nil
+				}
+			}
+			msgs = append(msgs, am)
+		default:
+			msgs = append(msgs, map[string]any{"role": string(m.Role), "content": m.Content})
+		}
+	}
+	return msgs
 }
