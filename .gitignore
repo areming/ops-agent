@@ -1,0 +1,10 @@
+# local tooling config
+/.claude/
+
+# build output
+/dist/
+/opsagent
+/opsagent.exe
+
+# unix sockets / local runtime artifacts
+*.sock
