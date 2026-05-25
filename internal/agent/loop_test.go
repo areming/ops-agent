@@ -71,12 +71,12 @@ func runScenario(t *testing.T, approve bool) (executed bool, finalText string, a
 	agentSide := transport.NewConn(c1)
 	clientSide := transport.NewConn(c2)
 
-	srv := &server{prov: prov, reg: reg, store: store, systemPrompt: baseSystemPrompt}
+	srv := &server{prov: prov, eng: &engine{reg: reg, store: store}, store: store, systemPrompt: baseSystemPrompt}
 	sess := newSession(store, 0)
 	sess.addUser(context.Background(), "do it")
 
 	errc := make(chan error, 1)
-	go func() { errc <- srv.runTurn(context.Background(), agentSide, sess) }()
+	go func() { errc <- srv.chatTurn(context.Background(), agentSide, sess) }()
 
 	var text strings.Builder
 loop:

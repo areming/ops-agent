@@ -11,6 +11,7 @@ import (
 
 	"github.com/areming/ops-agent/internal/config"
 	"github.com/areming/ops-agent/internal/memory"
+	"github.com/areming/ops-agent/internal/model"
 	"github.com/areming/ops-agent/internal/safety"
 	"github.com/areming/ops-agent/internal/tools"
 )
@@ -21,13 +22,52 @@ import (
 // recorded as a todo for a human, never executed. It holds no connection:
 // it can act with no CLI attached.
 type patrol struct {
-	store *memory.Store
-	shell tools.Tool // runs read-only checks and whitelisted restarts
-	cfg   config.PatrolConfig
+	eng      *engine
+	diagProv model.Provider // strong model used to diagnose findings
+	store    *memory.Store
+	shell    tools.Tool // runs read-only checks and whitelisted restarts
+	cfg      config.PatrolConfig
+	checks   []check
 }
 
-func newPatrol(store *memory.Store, cfg config.PatrolConfig) *patrol {
-	return &patrol{store: store, shell: tools.Shell{}, cfg: cfg}
+func newPatrol(eng *engine, diagProv model.Provider, cfg config.PatrolConfig) *patrol {
+	return &patrol{
+		eng:      eng,
+		diagProv: diagProv,
+		store:    eng.store,
+		shell:    tools.Shell{},
+		cfg:      cfg,
+		checks:   buildChecks(cfg),
+	}
+}
+
+// check is one patrol probe. It runs read-only commands through run and
+// returns findings; a finding with OK=false is a problem worth acting on.
+type check interface {
+	name() string
+	run(ctx context.Context, run runner) []finding
+}
+
+// runner executes one command (through the shell tool) on a check's behalf.
+type runner func(ctx context.Context, command string) (tools.Result, error)
+
+// buildChecks instantiates the checks named in cfg.Checks, skipping any
+// unknown name so a typo disables one check rather than the whole sweep.
+func buildChecks(cfg config.PatrolConfig) []check {
+	var checks []check
+	for _, name := range cfg.Checks {
+		switch name {
+		case "disk":
+			checks = append(checks, diskCheck{pct: cfg.DiskPct})
+		case "load":
+			checks = append(checks, loadCheck{per: cfg.LoadPer})
+		case "key_services":
+			checks = append(checks, servicesCheck{units: cfg.Services})
+		default:
+			log.Printf("patrol: unknown check %q, skipping", name)
+		}
+	}
+	return checks
 }
 
 // finding is one check result. A finding with OK=false is a problem; Unit
@@ -66,17 +106,8 @@ func (p *patrol) runOnce(ctx context.Context) {
 	started := time.Now().UTC()
 
 	var findings []finding
-	for _, check := range p.cfg.Checks {
-		switch check {
-		case "disk":
-			findings = append(findings, p.checkDisk(ctx)...)
-		case "load":
-			findings = append(findings, p.checkLoad(ctx)...)
-		case "key_services":
-			findings = append(findings, p.checkServices(ctx)...)
-		default:
-			log.Printf("patrol: unknown check %q, skipping", check)
-		}
+	for _, c := range p.checks {
+		findings = append(findings, c.run(ctx, p.run)...)
 	}
 
 	for _, f := range findings {
@@ -89,11 +120,12 @@ func (p *patrol) runOnce(ctx context.Context) {
 	p.record(ctx, started, findings)
 }
 
-// handle either runs a whitelisted auto-remedy or records a todo.
+// handle either runs a whitelisted auto-remedy or diagnoses and records a
+// finding it will not fix unattended.
 func (p *patrol) handle(ctx context.Context, f finding) {
 	if f.Unit == "" {
-		// No safe automatic fix (disk/load): leave it for a human.
-		p.todo(ctx, f, suggestedAction(f))
+		// No safe automatic fix (disk/load): diagnose and leave it for a human.
+		p.diagnose(ctx, f)
 		return
 	}
 
@@ -125,31 +157,39 @@ func (p *patrol) handle(ctx context.Context, f finding) {
 	log.Printf("patrol: auto-restarted %s", f.Unit)
 }
 
-// checkDisk flags mounts at or above the configured usage threshold.
-func (p *patrol) checkDisk(ctx context.Context) []finding {
-	res, err := p.run(ctx, "df -P")
+// diskCheck flags mounts at or above the configured usage threshold.
+type diskCheck struct{ pct int }
+
+func (diskCheck) name() string { return "disk" }
+
+func (c diskCheck) run(ctx context.Context, run runner) []finding {
+	res, err := run(ctx, "df -P")
 	if err != nil {
 		return []finding{probeError("disk", "df -P", err)}
 	}
 	var out []finding
 	for _, u := range parseDiskUsage(res.Output) {
-		if u.pct >= p.cfg.DiskPct {
+		if u.pct >= c.pct {
 			out = append(out, finding{
 				Check:    "disk",
 				OK:       false,
 				Severity: "high",
 				Title:    fmt.Sprintf("disk %d%% full on %s", u.pct, u.mount),
-				Detail:   fmt.Sprintf("%s is at %d%% (threshold %d%%)", u.mount, u.pct, p.cfg.DiskPct),
+				Detail:   fmt.Sprintf("%s is at %d%% (threshold %d%%)", u.mount, u.pct, c.pct),
 			})
 		}
 	}
 	return out
 }
 
-// checkLoad flags when the 1-minute load average per CPU is at or above the
+// loadCheck flags when the 1-minute load average per CPU is at or above the
 // configured threshold.
-func (p *patrol) checkLoad(ctx context.Context) []finding {
-	loadRes, err := p.run(ctx, "cat /proc/loadavg")
+type loadCheck struct{ per float64 }
+
+func (loadCheck) name() string { return "load" }
+
+func (c loadCheck) run(ctx context.Context, run runner) []finding {
+	loadRes, err := run(ctx, "cat /proc/loadavg")
 	if err != nil {
 		return []finding{probeError("load", "cat /proc/loadavg", err)}
 	}
@@ -158,14 +198,14 @@ func (p *patrol) checkLoad(ctx context.Context) []finding {
 		return []finding{probeError("load", "parse loadavg", err)}
 	}
 	ncpu := 1
-	if nres, err := p.run(ctx, "nproc"); err == nil {
+	if nres, err := run(ctx, "nproc"); err == nil {
 		if n, perr := parseNproc(nres.Output); perr == nil {
 			ncpu = n
 		}
 	}
 
 	per := load1 / float64(ncpu)
-	if per < p.cfg.LoadPer {
+	if per < c.per {
 		return nil
 	}
 	return []finding{{
@@ -173,16 +213,20 @@ func (p *patrol) checkLoad(ctx context.Context) []finding {
 		OK:       false,
 		Severity: "medium",
 		Title:    fmt.Sprintf("high load: %.2f over %d CPU(s)", load1, ncpu),
-		Detail:   fmt.Sprintf("1-min load %.2f = %.2f/CPU (threshold %.2f/CPU)", load1, per, p.cfg.LoadPer),
+		Detail:   fmt.Sprintf("1-min load %.2f = %.2f/CPU (threshold %.2f/CPU)", load1, per, c.per),
 	}}
 }
 
-// checkServices flags watched units that are not active. A down unit is a
+// servicesCheck flags watched units that are not active. A down unit is a
 // candidate for auto-restart (its Unit field is set).
-func (p *patrol) checkServices(ctx context.Context) []finding {
+type servicesCheck struct{ units []string }
+
+func (servicesCheck) name() string { return "key_services" }
+
+func (c servicesCheck) run(ctx context.Context, run runner) []finding {
 	var out []finding
-	for _, unit := range p.cfg.Services {
-		res, err := p.run(ctx, "systemctl is-active "+unit)
+	for _, unit := range c.units {
+		res, err := run(ctx, "systemctl is-active "+unit)
 		if err != nil {
 			out = append(out, probeError("key_services", "systemctl is-active "+unit, err))
 			continue
@@ -216,6 +260,11 @@ func (p *patrol) todo(ctx context.Context, f finding, action string) {
 	if p.store == nil {
 		return
 	}
+	if exists, err := p.store.OpenTodoExists(ctx, f.Title); err != nil {
+		log.Printf("patrol: check existing todo: %v", err)
+	} else if exists {
+		return // already recorded; don't spam a new todo every sweep
+	}
 	if _, err := p.store.InsertTodo(ctx, memory.Todo{
 		Source:          "patrol",
 		Severity:        f.Severity,
@@ -225,6 +274,82 @@ func (p *patrol) todo(ctx context.Context, f finding, action string) {
 	}); err != nil {
 		log.Printf("patrol: insert todo: %v", err)
 	}
+}
+
+// diagnosisSystemPrompt steers the diagnosis turn: investigate read-only,
+// recommend (don't perform) fixes, and end with an actionable summary.
+const diagnosisSystemPrompt = "You are opsagent's patrol diagnostician. A background check found a problem on the server. " +
+	"Use read-only shell commands to investigate, identify the most likely root cause, and recommend a concrete fix. " +
+	"You cannot perform write or destructive actions during patrol — recommend them instead. " +
+	"Finish with a brief, actionable summary an operator can act on."
+
+// diagnose investigates a finding that has no safe automatic fix and records
+// the model's analysis as a todo. It is skipped (no model call) when an open
+// todo for the same finding already exists, so a persistent problem is
+// diagnosed once rather than every sweep.
+func (p *patrol) diagnose(ctx context.Context, f finding) {
+	if p.store != nil {
+		if exists, _ := p.store.OpenTodoExists(ctx, f.Title); exists {
+			return
+		}
+	}
+	action := suggestedAction(f)
+	if p.eng != nil && p.diagProv != nil {
+		if analysis := p.runDiagnosis(ctx, f); analysis != "" {
+			action = analysis
+		}
+	}
+	p.todo(ctx, f, action)
+}
+
+// runDiagnosis drives a connectionless agent turn with the diagnosis model
+// and returns its analysis text. The throwaway session is never persisted,
+// so diagnosis does not pollute the chat thread.
+func (p *patrol) runDiagnosis(ctx context.Context, f finding) string {
+	prompt := fmt.Sprintf(
+		"A background check reported a problem on this server.\nCheck: %s\nTitle: %s\nDetail: %s\n\n"+
+			"Investigate with read-only commands, determine the likely root cause, and recommend a concrete fix.",
+		f.Check, f.Title, f.Detail)
+	sess := newSession(nil, 0)
+	sess.addUser(ctx, prompt)
+	ia := &patrolInteraction{store: p.store}
+	if err := p.eng.runTurn(ctx, p.diagProv, diagnosisSystemPrompt, ia, sess); err != nil {
+		log.Printf("patrol: diagnosis turn: %v", err)
+	}
+	return strings.TrimSpace(ia.text.String())
+}
+
+// patrolInteraction is the connectionless interaction for diagnosis: it
+// accumulates the model's text, refuses (recording the decline) any action
+// that needs confirmation, and logs the rest.
+type patrolInteraction struct {
+	store *memory.Store
+	text  strings.Builder
+}
+
+func (*patrolInteraction) source() string { return "patrol" }
+
+func (ia *patrolInteraction) onDelta(text string) error {
+	ia.text.WriteString(text)
+	return nil
+}
+
+func (*patrolInteraction) onToolStart(tool, command string) {
+	log.Printf("patrol diagnosis: ▶ %s: %s", tool, command)
+}
+
+func (*patrolInteraction) onError(msg string) {
+	log.Printf("patrol diagnosis: %s", msg)
+}
+
+func (*patrolInteraction) confirm(string, string, safety.Verdict) (bool, error) {
+	return false, nil // no human attached; never auto-run a flagged write
+}
+
+func (ia *patrolInteraction) declineRun(ctx context.Context, command string, v safety.Verdict) string {
+	audit(ctx, ia.store, "patrol", command, v, "skipped", 0, "")
+	return "This action needs a human and will not run during patrol. " +
+		"Describe it as a recommendation in your summary instead."
 }
 
 func (p *patrol) auditSkipped(ctx context.Context, cmd string) {
@@ -238,7 +363,11 @@ func (p *patrol) record(ctx context.Context, started time.Time, findings []findi
 	if p.store == nil {
 		return
 	}
-	checksJSON, _ := json.Marshal(p.cfg.Checks)
+	names := make([]string, len(p.checks))
+	for i, c := range p.checks {
+		names[i] = c.name()
+	}
+	checksJSON, _ := json.Marshal(names)
 	if findings == nil {
 		findings = []finding{}
 	}

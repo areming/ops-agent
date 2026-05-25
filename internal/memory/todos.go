@@ -31,6 +31,16 @@ VALUES (?, ?, ?, ?, ?, 'open', ?)`,
 	return res.LastInsertId()
 }
 
+// OpenTodoExists reports whether an open todo with the given title already
+// exists, so patrol can avoid recording (or re-diagnosing) the same finding
+// on every sweep.
+func (s *Store) OpenTodoExists(ctx context.Context, title string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM todos WHERE status = 'open' AND title = ?`, title).Scan(&n)
+	return n > 0, err
+}
+
 // ListOpenTodos returns open todos, newest first.
 func (s *Store) ListOpenTodos(ctx context.Context) ([]Todo, error) {
 	rows, err := s.db.QueryContext(ctx, `

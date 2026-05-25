@@ -10,6 +10,7 @@ import (
 
 	"github.com/areming/ops-agent/internal/config"
 	"github.com/areming/ops-agent/internal/memory"
+	"github.com/areming/ops-agent/internal/model"
 	"github.com/areming/ops-agent/internal/tools"
 )
 
@@ -80,7 +81,88 @@ func newTestPatrol(t *testing.T, cfg config.PatrolConfig, shell *fakeShell) (*pa
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	return &patrol{store: store, shell: shell, cfg: cfg}, store
+	return &patrol{store: store, shell: shell, cfg: cfg, checks: buildChecks(cfg)}, store
+}
+
+// On a finding with no auto-fix, diagnosis investigates, declines a
+// write the model proposes (recording it skipped), and stores the model's
+// analysis as the todo's suggested action.
+func TestPatrolDiagnosisRecordsAnalysisAsTodo(t *testing.T) {
+	executed := false
+	store, err := memory.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	eng := &engine{reg: tools.NewRegistry(stubTool{executed: &executed}), store: store}
+
+	diag := &fakeProvider{rounds: [][]model.ChatEvent{
+		{{Type: model.EventToolCall, Tool: &model.ToolCall{ID: "c1", Name: "do_thing", Arguments: json.RawMessage(`{}`)}}},
+		{{Type: model.EventTextDelta, Text: "Root cause: log files filled /. Recommend rotating logs."}},
+	}}
+	p := &patrol{eng: eng, diagProv: diag, store: store}
+	ctx := context.Background()
+
+	p.diagnose(ctx, finding{Check: "disk", OK: false, Severity: "high",
+		Title: "disk 95% full on /", Detail: "/ at 95%"})
+
+	if executed {
+		t.Error("diagnosis ran a write action; it should have been declined")
+	}
+	todos, _ := store.ListOpenTodos(ctx)
+	if len(todos) != 1 || !strings.Contains(todos[0].SuggestedAction, "rotating logs") {
+		t.Fatalf("want one todo carrying the analysis, got %+v", todos)
+	}
+	rows, _ := store.RecentAudit(ctx, 10)
+	if len(rows) != 1 || rows[0].Decision != "skipped" || rows[0].Source != "patrol" {
+		t.Fatalf("want one skipped/patrol audit row, got %+v", rows)
+	}
+}
+
+// A persistent problem is diagnosed once: with an open todo already present,
+// diagnose returns without calling the model.
+func TestPatrolDiagnosisDedupes(t *testing.T) {
+	store, err := memory.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if _, err := store.InsertTodo(ctx, memory.Todo{
+		Source: "patrol", Severity: "high", Title: "disk 95% full on /",
+	}); err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+
+	diag := &fakeProvider{rounds: [][]model.ChatEvent{{{Type: model.EventTextDelta, Text: "should not run"}}}}
+	p := &patrol{eng: &engine{reg: tools.NewRegistry(), store: store}, diagProv: diag, store: store}
+
+	p.diagnose(ctx, finding{Check: "disk", Title: "disk 95% full on /"})
+
+	if diag.call != 0 {
+		t.Error("diagnosis model was called despite an existing open todo")
+	}
+	todos, _ := store.ListOpenTodos(ctx)
+	if len(todos) != 1 {
+		t.Errorf("dedup failed: %d open todos, want 1", len(todos))
+	}
+}
+
+func TestBuildChecks(t *testing.T) {
+	got := buildChecks(config.PatrolConfig{
+		Checks:   []string{"disk", "bogus", "key_services", "load"},
+		DiskPct:  90,
+		LoadPer:  2.0,
+		Services: []string{"nginx"},
+	})
+	var names []string
+	for _, c := range got {
+		names = append(names, c.name())
+	}
+	want := []string{"disk", "key_services", "load"} // bogus skipped, order preserved
+	if !slices.Equal(names, want) {
+		t.Fatalf("buildChecks names = %v, want %v", names, want)
+	}
 }
 
 // A watched unit reported down is auto-restarted: the restart command runs,

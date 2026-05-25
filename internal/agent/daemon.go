@@ -15,6 +15,7 @@ import (
 	"github.com/areming/ops-agent/internal/config"
 	"github.com/areming/ops-agent/internal/memory"
 	"github.com/areming/ops-agent/internal/model"
+	"github.com/areming/ops-agent/internal/safety"
 	"github.com/areming/ops-agent/internal/secret"
 	"github.com/areming/ops-agent/internal/tools"
 	"github.com/areming/ops-agent/internal/transport"
@@ -27,7 +28,7 @@ const apiKeySecretName = "api_key"
 // server holds the per-process dependencies shared across connections.
 type server struct {
 	prov         model.Provider
-	reg          *tools.Registry
+	eng          *engine
 	store        *memory.Store
 	systemPrompt string // base prompt with knowledge files folded in
 	historyDepth int
@@ -45,6 +46,10 @@ func Serve(socketPath string) error {
 	if err != nil {
 		return err
 	}
+	diagProv, err := model.New(cfg.DiagProvider, apiKey, cfg.DiagBaseURL, cfg.DiagModel)
+	if err != nil {
+		return fmt.Errorf("diagnosis provider: %w", err)
+	}
 
 	store, err := memory.Open(cfg.DBPath)
 	if err != nil {
@@ -57,9 +62,13 @@ func Serve(socketPath string) error {
 		return err
 	}
 
+	eng := &engine{
+		reg:   tools.NewRegistry(tools.Shell{}, tools.ReadFile{}, tools.WriteFile{}),
+		store: store,
+	}
 	srv := &server{
 		prov:         prov,
-		reg:          tools.NewRegistry(tools.Shell{}, tools.ReadFile{}, tools.WriteFile{}),
+		eng:          eng,
 		store:        store,
 		systemPrompt: composeSystemPrompt(knowledge),
 		historyDepth: cfg.HistoryDepth,
@@ -70,7 +79,7 @@ func Serve(socketPath string) error {
 	if cfg.Patrol.Enabled {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go newPatrol(store, cfg.Patrol).Run(ctx)
+		go newPatrol(eng, diagProv, cfg.Patrol).Run(ctx)
 	}
 
 	ln, err := transport.Listen(socketPath)
@@ -138,15 +147,63 @@ func (srv *server) handle(nc net.Conn) {
 			continue
 		}
 		sess.addUser(ctx, text)
-		if err := srv.runTurn(ctx, conn, sess); err != nil {
+		if err := srv.chatTurn(ctx, conn, sess); err != nil {
 			log.Printf("turn: %v", err)
 			return
 		}
 	}
 }
 
+// chatTurn runs one turn for a CLI connection and closes it with a Done
+// frame. It returns an error only when the connection can no longer be
+// written, ending the session.
+func (srv *server) chatTurn(ctx context.Context, conn *transport.Conn, sess *session) error {
+	ia := &connInteraction{conn: conn, store: srv.store}
+	if err := srv.eng.runTurn(ctx, srv.prov, srv.systemPrompt, ia, sess); err != nil {
+		return err
+	}
+	return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
+}
+
 func writeError(conn *transport.Conn, msg string) {
 	if ef, err := transport.TextFrame(transport.TypeError, msg); err == nil {
 		_ = conn.WriteFrame(ef)
 	}
+}
+
+// connInteraction is the chat-path interaction: it streams frames to a CLI
+// connection and asks the human to confirm flagged actions.
+type connInteraction struct {
+	conn  *transport.Conn
+	store *memory.Store
+}
+
+func (connInteraction) source() string { return "chat" }
+
+func (c *connInteraction) onDelta(text string) error {
+	df, err := transport.TextFrame(transport.TypeAssistantDelta, text)
+	if err != nil {
+		return err
+	}
+	return c.conn.WriteFrame(df)
+}
+
+func (c *connInteraction) onToolStart(tool, command string) {
+	if sf, err := transport.PayloadFrame(transport.TypeToolStart, transport.ToolStartPayload{
+		Tool:    tool,
+		Command: command,
+	}); err == nil {
+		_ = c.conn.WriteFrame(sf)
+	}
+}
+
+func (c *connInteraction) onError(msg string) { writeError(c.conn, msg) }
+
+func (c *connInteraction) confirm(tool, command string, v safety.Verdict) (bool, error) {
+	return confirm(c.conn, tool, command, v)
+}
+
+func (c *connInteraction) declineRun(ctx context.Context, command string, v safety.Verdict) string {
+	audit(ctx, c.store, "chat", command, v, "denied", 0, "")
+	return "user denied this action; it was not run"
 }

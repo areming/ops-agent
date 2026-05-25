@@ -17,21 +17,53 @@ import (
 // loop forever.
 const maxToolRounds = 25
 
-// runTurn drives one user turn to completion: stream the model reply,
-// run any tool calls (through the safety gate), feed results back, and
-// repeat until the model answers with no further tool calls.
-func (srv *server) runTurn(ctx context.Context, conn *transport.Conn, sess *session) error {
-	modelTools := toModelTools(srv.reg)
+// engine is the reusable model<->tool loop: it streams a model reply, runs
+// tool calls through the safety gate, and feeds results back until the
+// model answers with none. It is shared by the chat path (over a CLI
+// connection) and patrol's diagnosis path (connectionless); the differences
+// live behind the interaction.
+type engine struct {
+	reg   *tools.Registry
+	store *memory.Store
+}
+
+// interaction is how a running turn talks to its initiator. The chat path
+// streams to a CLI connection and asks a human to confirm; patrol discards
+// the chatter and refuses (recording the decline) any action that needs
+// confirmation, since no human is attached.
+type interaction interface {
+	// source labels audit rows for this turn ("chat" | "patrol").
+	source() string
+	// onDelta receives streamed assistant text. A returned error (e.g. a
+	// broken connection) aborts the turn.
+	onDelta(text string) error
+	// onToolStart announces a tool about to run; best-effort.
+	onToolStart(tool, command string)
+	// onError surfaces a recoverable error; best-effort.
+	onError(msg string)
+	// confirm reports whether a Confirm-verdict action may run.
+	confirm(tool, command string, v safety.Verdict) (bool, error)
+	// declineRun records a Confirm-verdict action that will not run and
+	// returns the text fed back to the model in its place.
+	declineRun(ctx context.Context, command string, v safety.Verdict) string
+}
+
+// runTurn drives one turn to completion against the given provider and
+// system prompt. It returns an error only when the interaction can no
+// longer be reached (e.g. the connection dropped); model and tool failures
+// are surfaced through the interaction and fed back to the model.
+func (e *engine) runTurn(ctx context.Context, prov model.Provider, system string, ia interaction, sess *session) error {
+	modelTools := toModelTools(e.reg)
 
 	for range maxToolRounds {
-		ch, err := srv.prov.StreamChat(ctx, model.ChatRequest{
-			System:   srv.systemPrompt,
+		ch, err := prov.StreamChat(ctx, model.ChatRequest{
+			System:   system,
 			Messages: sess.msgs,
 			Tools:    modelTools,
 		})
 		if err != nil {
-			writeError(conn, err.Error())
-			return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
+			ia.onError(err.Error())
+			return nil
 		}
 
 		var text, reasoning strings.Builder
@@ -40,12 +72,8 @@ func (srv *server) runTurn(ctx context.Context, conn *transport.Conn, sess *sess
 			switch ev.Type {
 			case model.EventTextDelta:
 				text.WriteString(ev.Text)
-				df, ferr := transport.TextFrame(transport.TypeAssistantDelta, ev.Text)
-				if ferr != nil {
-					return ferr
-				}
-				if werr := conn.WriteFrame(df); werr != nil {
-					return werr
+				if derr := ia.onDelta(ev.Text); derr != nil {
+					return derr
 				}
 			case model.EventReasoningDelta:
 				// Captured for replay to thinking models; not shown yet.
@@ -53,31 +81,31 @@ func (srv *server) runTurn(ctx context.Context, conn *transport.Conn, sess *sess
 			case model.EventToolCall:
 				calls = append(calls, *ev.Tool)
 			case model.EventError:
-				writeError(conn, ev.Err.Error())
+				ia.onError(ev.Err.Error())
 			}
 		}
 
 		if len(calls) == 0 {
 			sess.addAssistant(ctx, text.String(), reasoning.String())
-			return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
+			return nil
 		}
 
 		sess.addAssistantWithCalls(ctx, text.String(), reasoning.String(), calls)
 		for _, call := range calls {
-			result := srv.execute(ctx, conn, call)
+			result := e.execute(ctx, ia, call)
 			sess.addToolResult(ctx, call.ID, result)
 		}
 	}
 
-	writeError(conn, fmt.Sprintf("stopped after %d tool rounds", maxToolRounds))
-	return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
+	ia.onError(fmt.Sprintf("stopped after %d tool rounds", maxToolRounds))
+	return nil
 }
 
-// execute classifies one tool call, asks the user when needed, runs it,
-// audits state changes, and returns the result text to feed back to the
-// model.
-func (srv *server) execute(ctx context.Context, conn *transport.Conn, call model.ToolCall) string {
-	tool, ok := srv.reg.Get(call.Name)
+// execute classifies one tool call, consults the interaction when the gate
+// asks for confirmation, runs it, audits state changes, and returns the
+// result text to feed back to the model.
+func (e *engine) execute(ctx context.Context, ia interaction, call model.ToolCall) string {
+	tool, ok := e.reg.Get(call.Name)
 	if !ok {
 		return "error: unknown tool " + call.Name
 	}
@@ -93,38 +121,32 @@ func (srv *server) execute(ctx context.Context, conn *transport.Conn, call model
 
 	decision := "auto"
 	if verdict.Decision == safety.Confirm {
-		approved, err := confirm(conn, tool.Name(), display, verdict)
+		approved, err := ia.confirm(tool.Name(), display, verdict)
 		if err != nil {
 			return "error: confirmation failed: " + err.Error()
 		}
 		if !approved {
-			audit(ctx, srv.store, "chat", display, verdict, "denied", 0, "")
-			return "user denied this action; it was not run"
+			return ia.declineRun(ctx, display, verdict)
 		}
 		decision = "approved"
 	}
 
-	// Tell the client what is about to run.
-	if sf, err := transport.PayloadFrame(transport.TypeToolStart, transport.ToolStartPayload{
-		Tool:    tool.Name(),
-		Command: display,
-	}); err == nil {
-		_ = conn.WriteFrame(sf)
-	}
+	ia.onToolStart(tool.Name(), display)
 
 	res, err := tool.Execute(ctx, call.Arguments)
 	if err != nil {
 		if !tool.ReadOnly() {
-			audit(ctx, srv.store, "chat", display, verdict, decision, -1, err.Error())
+			audit(ctx, e.store, ia.source(), display, verdict, decision, -1, err.Error())
 		}
 		return "tool error: " + err.Error()
 	}
 	if !tool.ReadOnly() {
-		audit(ctx, srv.store, "chat", display, verdict, decision, res.ExitCode, res.Output)
+		audit(ctx, e.store, ia.source(), display, verdict, decision, res.ExitCode, res.Output)
 	}
 	return formatResult(res)
 }
 
+// confirm runs the request/reply handshake over a CLI connection.
 func confirm(conn *transport.Conn, tool, command string, v safety.Verdict) (bool, error) {
 	req, err := transport.PayloadFrame(transport.TypeConfirmRequest, transport.ConfirmRequestPayload{
 		Tool:    tool,

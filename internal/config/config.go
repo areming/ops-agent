@@ -23,6 +23,14 @@ type Config struct {
 	BaseURL  string // optional override for OpenAI-compatible/Anthropic
 	DBPath   string // SQLite state/audit database
 
+	// Diagnosis model used by patrol to investigate findings. Each field
+	// falls back to its chat-model counterpart when its OPSAGENT_DIAG_*
+	// variable is unset, so an unconfigured install diagnoses with the main
+	// model and shares its API key.
+	DiagProvider string
+	DiagModel    string
+	DiagBaseURL  string
+
 	// StateDir holds the agent's at-rest state: secret keystore, master
 	// key, and knowledge files. Per-file paths derive from it.
 	StateDir      string
@@ -53,6 +61,9 @@ func Load() Config {
 		Model:         os.Getenv("OPSAGENT_MODEL"),
 		APIKey:        os.Getenv("OPSAGENT_API_KEY"),
 		BaseURL:       os.Getenv("OPSAGENT_BASE_URL"),
+		DiagProvider:  getenv("OPSAGENT_DIAG_PROVIDER", getenv("OPSAGENT_PROVIDER", "openai")),
+		DiagModel:     getenv("OPSAGENT_DIAG_MODEL", os.Getenv("OPSAGENT_MODEL")),
+		DiagBaseURL:   getenv("OPSAGENT_DIAG_BASE_URL", os.Getenv("OPSAGENT_BASE_URL")),
 		DBPath:        getenv("OPSAGENT_DB", filepath.Join(stateDir, "state.db")),
 		StateDir:      stateDir,
 		KeystorePath:  filepath.Join(stateDir, "keystore.json"),
