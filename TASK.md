@@ -89,6 +89,7 @@ M5 已做（巡检 + 自愈）：
 - [x] 巡检 check 插件化（A）：抽 `check` 接口（`name`/`run(ctx,runner)`）+ `diskCheck/loadCheck/servicesCheck` + `buildChecks`（未知名 skip）；解析纯函数不变。纯重构，现有测试不改即过 + 新增 `TestBuildChecks`
 - [x] 多模型场景化（B）：`OPSAGENT_DIAG_*` 诊断模型（未配回退主模型）；抽 `engine`+`interaction` 把 model↔tool 循环从 conn 解耦（chat=connInteraction 行为不变，loop approve/deny 测试无回归）；patrol 对无自动修复的 finding（disk/load）跑无连接诊断 turn，模型只读诊断/写操作→todo（附分析）；`OpenTodoExists` 去重（顺带修 M5「满盘每 tick 刷 todo」隐患）
 - [x] 批量任务 fan-out（C）：`opsagent run -c "<指令>" <host>... [--yes]`，抽 `sshBridge` 复用、有界并发（5）、非交互 drain；默认拒绝需确认的写操作并标「需人工」，`--yes` 显式全批准；成组打印 + 汇总
+- [x] 引导式部署向导（D）：`opsagent setup` 交互问答（provider/模型/host）→ 自动前置检查（ssh + `sudo -n`，失败给 visudo 修复提示并可重试）→ 复用 `cli.Enroll` 部署 → `systemctl is-active` 验证。隐藏 key 输入引 `golang.org/x/term`（第 3 个依赖，已批准）。纯函数 `normalizeProvider/defaultModel/isYes/setupSummary` 有单测
 - [x] 离线验收（A/B/C）：全测试/vet/gofmt 干净（新增 buildChecks、诊断记 todo+skipped、dedup 守卫、fanout decline/approve/失败汇总测试）；交叉编译 amd64/arm64 静态二进制
 - [ ] git commit + push M6（A/B/C）
 - [ ] live 验收：fan-out 多台跑通；DIAG 模型对真实 disk/load 异常给出有用诊断 todo（需 DeepSeek key + 多机）
@@ -158,3 +159,4 @@ M5 已做（巡检 + 自愈）：
 - **2026-05-25 M6-B 诊断触发面（已定）**：只对**无自动修复**的 finding（disk/load）触发强模型诊断；key_services 已自动重启不再调模型。诊断用 throwaway session（store=nil）不污染对话线程。理由：成本最可控、分工自然。模型未配（`OPSAGENT_DIAG_*` 空）则回退主模型。
 - **2026-05-25 M6-B todo 去重（已定）**：`OpenTodoExists` 按标题去重——同一持续问题只诊断一次、不每 tick 刷 todo。顺带修掉 M5 的 todo 刷屏隐患。
 - **2026-05-25 M6-C fan-out 确认策略（已定）**：非交互批量默认**拒绝**需确认的写操作（只跑自动放行的只读/白名单），declined 标「需人工」；`--yes` 显式 opt-in 全批准（危险，手动开）。备选「串行逐台交互」被否（与批量初衷相悖）。SSH stderr 仍直通 os.Stderr（多机会轻微交错，可接受，美化后置）。
+- **2026-05-25 M6-D 引导向导（已定）**：用户反馈手动多步部署「有点小复杂」，加 `opsagent setup` 交互向导降低首用门槛。范围只做向导（安装维持本地 build.ps1，不引 GitHub Releases/安装脚本），入口显式子命令（不抢无参 usage 行为）。隐藏 key 输入引 `golang.org/x/term`（第 3 个第三方依赖，已批准；纯 Go、与 x/crypto 同源、`CGO_ENABLED=0` 交叉编译仍 statically linked 已核对）。向导不重写部署，复用 `cli.Enroll`；前置检查 ssh+`sudo -n` 失败给修复提示并可重试。

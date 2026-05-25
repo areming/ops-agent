@@ -44,6 +44,7 @@ internal/
 ## 4. 常用命令
 
 ```
+opsagent setup                              引导式向导：问答 + 自动前置检查 + 部署（推荐首次用）
 opsagent enroll <host> [flags]              一条命令部署到 Linux 机（API key 从 stdin 读）
 opsagent connect <host>                     开一段对话（SSH）
 opsagent connect --local <socket>           本地直连（开发）

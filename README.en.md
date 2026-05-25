@@ -45,6 +45,16 @@ Cross-compiles to `./dist/opsagent-{linux-amd64,linux-arm64,windows-amd64}`, eac
 
 ## Deploy
 
+**Easiest — guided wizard** (recommended for first use):
+
+```bash
+opsagent setup
+```
+
+It walks you through provider / model / target host, **checks SSH and passwordless sudo** (with fix hints if either fails), then deploys and verifies the service is up. You only answer questions — no flags to remember.
+
+Or deploy manually in one command:
+
 ```bash
 # the API key is read from stdin, so it never lands in shell history / the process list
 echo "$DEEPSEEK_KEY" | opsagent enroll web1 --provider deepseek --model deepseek-chat
