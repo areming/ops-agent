@@ -8,20 +8,23 @@
 
 ## 下次会话从哪开始
 
-**M3 代码完成 + 离线验收通过，待 live 验收 + 待提交。** 工作树有未提交改动（见 git status）。
+**M3 已提交推送（commit `9476136`+`f3e780f`）。M4 代码完成 + 离线验收通过，待 live 验收 + 待提交。** 工作树有 M4 未提交改动。
 
-M3 已做：
-- `secret/keystore`：secretbox 加密存取（主密钥独立 0600 文件，重启自解，无人值守）；`opsagent key set/list` 子命令（set 从 stdin 读值，绝不进 shell history）。
-- `memory/history`：会话消息落 SQLite，新连接注水最近 N 条（默认 50，`OPSAGENT_HISTORY`），单一滚动线程。
-- `memory/knowledge`：启动加载 `*.md` 拼进系统提示。
-- config 加 StateDir + 派生路径；serve 优先 env key、否则从 keystore 取 `api_key`。
+M4 已做（enroll 一键部署 + logs/todos 查看）：
+- `cli/enroll.go`：`opsagent enroll <host>` —— `ssh uname -m` 探架构 → `scp` 对应 `dist/opsagent-linux-<arch>` → `ssh host sudo -n bash -s` 跑幂等 bootstrap（建系统用户、装 /usr/local/bin、写 sudoers.d（visudo 校验）、写 systemd unit、base64→`key set api_key`、`usermod -aG opsagent $SUDO_USER`、`enable --now`）。纯函数 `archFromUname`/`buildSudoers`/`buildSystemdUnit`/`buildBootstrap` 全有单测。
+- 路径布局：bin `/usr/local/bin/opsagent`、state `/var/lib/opsagent`、socket `/run/opsagent/agent.sock`、`/etc/sudoers.d/opsagent`、`/etc/systemd/system/opsagent.service`。
+- config：Linux 默认 StateDir=`/var/lib/opsagent`、DBPath=`<state>/state.db`；`resolveSocket` Linux 默认 `/run/opsagent/agent.sock`（serve 与 _bridge 对齐 → `connect <host>` 免 flag）。
+- transport：socket chmod 0660（组成员可连，配合 enroll 把你加进 opsagent 组）。
+- `logs`/`todos` 子命令：**只读**打开本地 DB（`memory.OpenReadOnly`，免 migrate 写，操作者组只读也能看；DB 缺失友好提示）。`todos` 表已建（M5 才写数据）。
 
-离线验收（本机已过）：全测试 + vet 过；新增 keystore/history/knowledge 单测；交叉编译 linux amd64/arm64 仍 `statically linked`（x/crypto 纯 Go，CGO 仍关）；`key set/list` 落密文无明文、主密钥 32B；serve 能从 keystore 启动、无 key 时报清晰错误。
+离线验收（本机已过）：全测试+vet+gofmt 干净；新增 enroll 生成物单测、todos/RecentAudit/OpenReadOnly 单测；交叉编译 amd64/arm64 仍 `statically linked`；`logs`/`todos` 空库/缺库友好；enroll 无 host 报清晰用法错误。
 
-**待 live 验收（需你那边 DeepSeek key，沿用之前流程）**：① 知识档案影响回答 ② 重连引用到此前历史。
-**待提交**：M3 改动尚未 commit（你没说提交我就没动）。
+**sudo 前提**：enroll 要求 SSH 用户能免密 sudo（NOPASSWD）或本就是 root；用 `sudo -n` 失败即清晰报错（不挂起）。
 
-下一步 = live 验收 M3，过了就提交；然后 M4（enroll 一键部署）。
+**待 live 验收（需你那台 Linux 机，同时首次跑通 SSH 路径）**：干净机 `enroll <host>` → `connect <host>` 即用 → agent 跑在 opsagent 用户、提权走 sudo 白名单。外加 **M3 的两条 live**：知识档案影响回答、重连引用历史（需 DeepSeek key）。
+**待提交**：M4 改动尚未 commit。
+
+下一步 = 你那边 live 验收（M3 两条 + M4 部署），过了提交 M4；然后 M5（巡检自愈，依赖已就绪的 key 持久化 + todos 表）。
 
 ---
 
@@ -65,10 +68,12 @@ M3 已做：
 - [ ] live 验收：重开 session 引用历史；知识档案影响回答（需 DeepSeek key）
 - [ ] git commit + push M3
 
-### M4 — enroll 一键部署　⬜
-- [ ] `opsagent enroll <host>`：传二进制、建专用用户、生成 sudoers 白名单、装 systemd unit、初始化配置与目录
-- [ ] `opsagent todos` / `logs` 查看入口
-- [ ] 验收：干净 Linux 机一条命令部署、`connect` 即用、专用用户运行、提权走 sudo 白名单
+### M4 — enroll 一键部署　🟡（代码+离线验收过，待 live 验收+提交）
+- [x] `opsagent enroll <host>`：scp 二进制、建系统用户、生成 sudoers 白名单（仅 systemctl/journalctl）、装 systemd unit、初始化目录、provision key+provider
+- [x] `opsagent todos` / `logs` 查看入口（只读打开本地 DB）
+- [x] 离线验收：enroll 生成物单测（arch/sudoers/unit/bootstrap）、logs/todos 读 DB、交叉编译静态二进制、vet/gofmt 干净
+- [ ] live 验收：干净 Linux 机一条命令部署、`connect` 即用、专用用户运行、提权走 sudo 白名单（需你那台机，首次跑通 SSH 路径）
+- [ ] git commit + push M4
 
 ### M5 — 巡检 + 自愈　⬜（依赖 M3 的 key 持久化）
 - [ ] `agent/patrol`：定时调度 + 检查集（disk/load/key_services）
@@ -84,7 +89,7 @@ M3 已做：
 - [ ] 配置从环境变量升级到 TOML 文件　⚠️依赖待决：TOML 库
 
 ### 跨里程碑待办
-- [ ] M0 SSH 路径 live 验收（需你那台 Linux 机器）
+- [ ] M0 SSH 路径 live 验收（需你那台 Linux 机器）——将随 M4 enroll/connect live 验收一并跑通
 - [ ] 依赖决策待点头：bubbletea(M6) / TOML(M6)　（SQLite(M2)、x/crypto secretbox(M3) 已批准并落地）
 - [x] 推理模型支持（已修+已推送 `95019ae`，2026-05-24）：OpenAI 适配器捕获 `delta.reasoning_content`（发 `EventReasoningDelta`），loop 累积存到 `Message.Reasoning`，`buildOpenAIMessages` 仅在非空时回传 `reasoning_content`。新增两个离线测试；live 用 `deepseek-v4-pro` 复跑第二轮不再 400。非推理模型零影响。Anthropic extended thinking 仍未做（另一套 thinking block 机制，等真用 Claude 推理再列）。
 
@@ -128,3 +133,10 @@ M3 已做：
 - **2026-05-25 M3 keystore 存储（已定）**：密文存独立 `keystore.json`（非复用 sqlite）。理由：secrets 与运营数据（audit/会话）生命周期分离、权限单独 chmod、备份 DB 不连带导出密钥、secret 包不依赖 sqlite。
 - **2026-05-25 M3 会话记忆（已定）**：单一滚动线程，新连接注水最近 N 条（默认 50）。理由：单服务器+单运维场景最简且够用；带 session ID 要改 transport 握手和 CLI，超出 M3 验收。
 - **2026-05-25 M3 API key 优先级（已定）**：`OPSAGENT_API_KEY` 存在则用（dev 覆盖），否则从 keystore 取 `api_key`。理由：满足"配置无明文 key"同时保留 dev 便利。
+
+- **2026-05-25 M4 socket 接入（已定）**：组权限——socket `/run/opsagent/agent.sock` 组 `opsagent` 0660，enroll 把登录用户加进该组，`connect`/`_bridge` 直连不改。理由：标准做法、改动最小；备选 sudo 代跳要改 ConnectSSH 拼 sudo + 多一条 sudoers。注：组成员要重登生效，但 connect 每次新 SSH 会话故第一次即生效。
+- **2026-05-25 M4 sudoers 范围（已定）**：仅 `systemctl`+`journalctl` NOPASSWD。理由：最小权限起步；写操作另有安全闸门确认拦，sudoers 只管"技术上允许什么"。拓宽留给用户事后手动。
+- **2026-05-25 M4 key 供给（已定）**：enroll 顺手 provision——收 `--provider/--model/--base-url` + stdin 读 key；远端写 unit Environment(provider/model) + base64→`key set` 存密文。理由：满足"connect 即用"验收。
+- **2026-05-25 M4 路径与默认（已定）**：Linux 上 config 默认走生产路径（state `/var/lib/opsagent`、socket `/run/opsagent/agent.sock`），dev(Windows/mac) 仍 UserConfigDir/temp。理由：serve/key/logs/_bridge 零参数对齐，`connect <host>` 免 flag。
+- **2026-05-25 M4 enroll 机制（已定）**：`scp` 二进制 + `ssh host sudo -n bash -s` 跑幂等 bootstrap 脚本（key 走 base64 经管道进 `key set`，不落远端磁盘）。前提：SSH 用户免密 sudo 或 root，`sudo -n` 失败即清晰报错。systemd unit 走精简版（不加重度沙箱，因 sudo 需 NoNewPrivileges=false）。
+- **2026-05-25 M4 logs/todos 读取（已定）**：只读打开本地 DB（`OpenReadOnly`，免 migrate 写），远端查看走 `ssh host opsagent logs`。理由：避免操作者组只读访问触发 migrate 写而失败；远端美化视图后置。
