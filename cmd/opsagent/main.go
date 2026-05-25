@@ -37,6 +37,8 @@ func main() {
 	switch cmd {
 	case "serve":
 		err = runServe(args)
+	case "setup":
+		err = cli.Setup()
 	case "connect":
 		err = runConnect(args)
 	case "run":
@@ -293,6 +295,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `opsagent — lightweight ops assistant
 
 usage:
+  opsagent setup                      guided first-time deploy (interactive)
   opsagent enroll <host> [flags]      deploy the agent to a Linux host
   opsagent connect <host> [--socket REMOTE_PATH] [--bin REMOTE_BIN]
   opsagent connect --local PATH
