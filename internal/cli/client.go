@@ -29,6 +29,22 @@ func ConnectLocal(socketPath string) error {
 // Frame protocol across the SSH stdio. An empty remoteSocket lets the
 // remote use its own default path.
 func ConnectSSH(host, remoteSocket, remoteBin string) error {
+	conn, cleanup, err := sshBridge(host, remoteSocket, remoteBin)
+	if err != nil {
+		return err
+	}
+	rerr := repl(conn)
+	if cerr := cleanup(); rerr == nil {
+		rerr = cerr
+	}
+	return rerr
+}
+
+// sshBridge starts `opsagent _bridge` on host over SSH and returns a Conn
+// over its stdio plus a cleanup func that closes the input and waits for
+// the remote to exit. An empty remoteSocket lets the remote use its default
+// path.
+func sshBridge(host, remoteSocket, remoteBin string) (*transport.Conn, func() error, error) {
 	sshArgs := []string{host, remoteBin, "_bridge"}
 	if remoteSocket != "" {
 		sshArgs = append(sshArgs, "--socket", remoteSocket)
@@ -36,22 +52,21 @@ func ConnectSSH(host, remoteSocket, remoteBin string) error {
 	cmd := exec.Command("ssh", sshArgs...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, nil, err
 	}
-	rerr := repl(transport.NewConnRW(stdout, stdin))
-	_ = stdin.Close()
-	if werr := cmd.Wait(); rerr == nil {
-		rerr = werr
+	cleanup := func() error {
+		_ = stdin.Close()
+		return cmd.Wait()
 	}
-	return rerr
+	return transport.NewConnRW(stdout, stdin), cleanup, nil
 }
 
 // repl reads a line, sends it as UserInput, then handles the streamed

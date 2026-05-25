@@ -39,6 +39,8 @@ func main() {
 		err = runServe(args)
 	case "connect":
 		err = runConnect(args)
+	case "run":
+		err = runFanOut(args)
 	case "_bridge":
 		err = runBridge(args)
 	case "key":
@@ -85,6 +87,23 @@ func runConnect(args []string) error {
 		return fmt.Errorf("usage: opsagent connect <host> | --local <socket>")
 	}
 	return cli.ConnectSSH(rest[0], *socket, *bin)
+}
+
+// runFanOut runs one instruction non-interactively across several hosts.
+// Actions needing confirmation are skipped per host unless --yes is given.
+func runFanOut(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	instruction := fs.String("c", "", "instruction to run on each host")
+	socket := fs.String("socket", "", "remote agent socket path")
+	bin := fs.String("bin", "opsagent", "remote opsagent binary")
+	yes := fs.Bool("yes", false, "auto-approve actions that need confirmation (dangerous)")
+	_ = fs.Parse(args)
+
+	hosts := fs.Args()
+	if *instruction == "" || len(hosts) == 0 {
+		return fmt.Errorf(`usage: opsagent run -c "<instruction>" <host>... [--yes]`)
+	}
+	return cli.FanOut(hosts, *instruction, *socket, *bin, *yes)
 }
 
 // runKey manages secrets in the encrypted keystore. `set` reads the value
@@ -277,6 +296,7 @@ usage:
   opsagent enroll <host> [flags]      deploy the agent to a Linux host
   opsagent connect <host> [--socket REMOTE_PATH] [--bin REMOTE_BIN]
   opsagent connect --local PATH
+  opsagent run -c "<instruction>" <host>... [--yes]   run one instruction across hosts
   opsagent serve [--socket PATH]
   opsagent key set <name>             (value read from stdin)
   opsagent key list
