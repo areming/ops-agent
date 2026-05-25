@@ -65,6 +65,14 @@ func Serve(socketPath string) error {
 		historyDepth: cfg.HistoryDepth,
 	}
 
+	// Patrol runs for the lifetime of the daemon, independent of any CLI
+	// connection.
+	if cfg.Patrol.Enabled {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go newPatrol(store, cfg.Patrol).Run(ctx)
+	}
+
 	ln, err := transport.Listen(socketPath)
 	if err != nil {
 		return err

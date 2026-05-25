@@ -98,7 +98,7 @@ func (srv *server) execute(ctx context.Context, conn *transport.Conn, call model
 			return "error: confirmation failed: " + err.Error()
 		}
 		if !approved {
-			audit(ctx, srv.store, display, verdict, "denied", 0, "")
+			audit(ctx, srv.store, "chat", display, verdict, "denied", 0, "")
 			return "user denied this action; it was not run"
 		}
 		decision = "approved"
@@ -115,12 +115,12 @@ func (srv *server) execute(ctx context.Context, conn *transport.Conn, call model
 	res, err := tool.Execute(ctx, call.Arguments)
 	if err != nil {
 		if !tool.ReadOnly() {
-			audit(ctx, srv.store, display, verdict, decision, -1, err.Error())
+			audit(ctx, srv.store, "chat", display, verdict, decision, -1, err.Error())
 		}
 		return "tool error: " + err.Error()
 	}
 	if !tool.ReadOnly() {
-		audit(ctx, srv.store, display, verdict, decision, res.ExitCode, res.Output)
+		audit(ctx, srv.store, "chat", display, verdict, decision, res.ExitCode, res.Output)
 	}
 	return formatResult(res)
 }
@@ -152,12 +152,12 @@ func confirm(conn *transport.Conn, tool, command string, v safety.Verdict) (bool
 	return reply.Approved, nil
 }
 
-func audit(ctx context.Context, store *memory.Store, command string, v safety.Verdict, decision string, exitCode int, output string) {
+func audit(ctx context.Context, store *memory.Store, source, command string, v safety.Verdict, decision string, exitCode int, output string) {
 	if store == nil {
 		return
 	}
 	_ = store.InsertAudit(ctx, memory.AuditEntry{
-		Source:     "chat",
+		Source:     source,
 		Command:    command,
 		Risk:       v.Risk,
 		Reversible: v.Reversible,

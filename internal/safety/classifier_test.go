@@ -47,3 +47,39 @@ func TestClassify(t *testing.T) {
 		})
 	}
 }
+
+func TestIsPatrolAutoRemedy(t *testing.T) {
+	units := []string{"nginx", "postgresql.service"}
+	cases := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"restart watched unit", "systemctl restart nginx", true},
+		{"start watched unit", "systemctl start nginx", true},
+		{"restart watched unit with suffix", "systemctl restart postgresql.service", true},
+		{"absolute systemctl path", "/usr/bin/systemctl restart nginx", true},
+		{"sudo restart", "sudo systemctl restart nginx", true},
+		{"sudo -n restart", "sudo -n systemctl restart nginx", true},
+
+		{"unit not in list", "systemctl restart sshd", false},
+		{"sudo unit not in list", "sudo systemctl restart sshd", false},
+		{"stop is not a remedy verb", "systemctl stop nginx", false},
+		{"disable is not a remedy verb", "systemctl disable nginx", false},
+		{"non-systemctl binary", "service nginx restart", false},
+		{"extra arguments", "systemctl restart nginx --now", false},
+		{"missing unit", "systemctl restart", false},
+		{"chained command sneaks danger", "systemctl restart nginx; rm -rf /", false},
+		{"pipe", "systemctl restart nginx | tee log", false},
+		{"command substitution", "systemctl restart $(echo nginx)", false},
+		{"empty", "", false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := IsPatrolAutoRemedy(c.cmd, units); got != c.want {
+				t.Errorf("IsPatrolAutoRemedy(%q) = %v, want %v", c.cmd, got, c.want)
+			}
+		})
+	}
+}

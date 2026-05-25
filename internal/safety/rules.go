@@ -2,6 +2,7 @@ package safety
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -33,6 +34,53 @@ func matchDanger(cmd string) string {
 		}
 	}
 	return ""
+}
+
+// IsPatrolAutoRemedy reports whether patrol may run cmd unattended as a
+// self-heal action. It is intentionally narrow: only `systemctl start` or
+// `systemctl restart` (optionally via `sudo`, since the agent runs as a
+// non-root service user) of a unit the operator explicitly listed for
+// patrol, and never anything matching a danger rule. This is the single
+// point that lets patrol perform a write without a human; chat-path writes
+// still go through Classify and require confirmation.
+func IsPatrolAutoRemedy(cmd string, allowedUnits []string) bool {
+	cmd = strings.TrimSpace(cmd)
+	if matchDanger(cmd) != "" {
+		return false
+	}
+	// No shell metacharacters: a remediation command is a single plain
+	// invocation, never a pipeline, redirect, or sequence.
+	if strings.ContainsAny(cmd, ">|`&;") || strings.Contains(cmd, "$(") {
+		return false
+	}
+	fields := strings.Fields(cmd)
+
+	// Allow an optional leading `sudo` with flags (e.g. `sudo -n`).
+	if len(fields) > 0 && baseName(fields[0]) == "sudo" {
+		fields = fields[1:]
+		for len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
+			fields = fields[1:]
+		}
+	}
+
+	if len(fields) != 3 {
+		return false
+	}
+	if baseName(fields[0]) != "systemctl" {
+		return false
+	}
+	if fields[1] != "start" && fields[1] != "restart" {
+		return false
+	}
+	return slices.Contains(allowedUnits, fields[2])
+}
+
+// baseName strips a leading path from a binary token (/usr/bin/ps -> ps).
+func baseName(bin string) string {
+	if idx := strings.LastIndexByte(bin, '/'); idx >= 0 {
+		return bin[idx+1:]
+	}
+	return bin
 }
 
 // readOnlyBins are binaries that cannot change system state regardless of

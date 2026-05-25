@@ -85,6 +85,13 @@ CREATE TABLE IF NOT EXISTS todos (
     suggested_action TEXT,
     status           TEXT NOT NULL DEFAULT 'open',
     created_at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS patrol_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT NOT NULL,
+    checks_json   TEXT NOT NULL,
+    findings_json TEXT NOT NULL
 )`)
 	return err
 }

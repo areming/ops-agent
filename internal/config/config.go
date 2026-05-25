@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // prodStateDir is where a Linux service install keeps its state. enroll
@@ -28,6 +30,19 @@ type Config struct {
 	MasterKeyPath string
 	KnowledgeDir  string
 	HistoryDepth  int // messages reloaded into a new session from history
+
+	Patrol PatrolConfig
+}
+
+// PatrolConfig controls the background patrol loop. Until TOML config
+// arrives (M6) these come from OPSAGENT_PATROL_* environment variables.
+type PatrolConfig struct {
+	Enabled  bool
+	Interval time.Duration
+	Checks   []string // subset of: disk, load, key_services
+	Services []string // units patrol watches and may auto-restart
+	DiskPct  int      // flag a mount when used% is at or above this
+	LoadPer  float64  // flag when 1-min load / CPU count is at or above this
 }
 
 // Load reads OPSAGENT_* environment variables.
@@ -44,6 +59,22 @@ func Load() Config {
 		MasterKeyPath: filepath.Join(stateDir, "master.key"),
 		KnowledgeDir:  getenv("OPSAGENT_KNOWLEDGE_DIR", filepath.Join(stateDir, "knowledge")),
 		HistoryDepth:  getenvInt("OPSAGENT_HISTORY", 50),
+		Patrol:        loadPatrol(),
+	}
+}
+
+// loadPatrol reads OPSAGENT_PATROL_* variables. Patrol runs read-only
+// checks by default, but auto-restart fires only for units explicitly
+// listed in OPSAGENT_PATROL_SERVICES, so the default install never acts
+// unattended until the operator opts a unit in.
+func loadPatrol() PatrolConfig {
+	return PatrolConfig{
+		Enabled:  getenvBool("OPSAGENT_PATROL", true),
+		Interval: getenvDuration("OPSAGENT_PATROL_INTERVAL", 5*time.Minute),
+		Checks:   getenvList("OPSAGENT_PATROL_CHECKS", []string{"disk", "load", "key_services"}),
+		Services: getenvList("OPSAGENT_PATROL_SERVICES", nil),
+		DiskPct:  getenvInt("OPSAGENT_PATROL_DISK_PCT", 90),
+		LoadPer:  getenvFloat("OPSAGENT_PATROL_LOAD", 2.0),
 	}
 }
 
@@ -73,4 +104,47 @@ func getenvInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+func getenvFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+func getenvBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
+}
+
+func getenvDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
+
+// getenvList splits a comma-separated variable into trimmed, non-empty
+// entries; an unset variable yields def.
+func getenvList(key string, def []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	var out []string
+	for part := range strings.SplitSeq(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

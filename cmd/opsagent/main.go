@@ -205,7 +205,7 @@ func runLogs(args []string) error {
 		return nil
 	}
 	for _, e := range entries {
-		fmt.Printf("%s  [%s/%s] exit=%d  %s\n", e.CreatedAt, e.Decision, e.Risk, e.ExitCode, e.Command)
+		fmt.Printf("%s  %s  [%s/%s] exit=%d  %s\n", e.CreatedAt, e.Source, e.Decision, e.Risk, e.ExitCode, e.Command)
 	}
 	return nil
 }

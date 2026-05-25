@@ -14,7 +14,7 @@ type AuditEntry struct {
 	Command    string
 	Risk       string // low | medium | high
 	Reversible bool
-	Decision   string // auto | approved | denied
+	Decision   string // auto | approved | denied | skipped
 	ExitCode   int
 	Output     string
 }
