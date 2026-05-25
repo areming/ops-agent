@@ -5,6 +5,7 @@ package memory
 
 import (
 	"database/sql"
+	"os"
 
 	_ "modernc.org/sqlite"
 )
@@ -32,6 +33,25 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// OpenReadOnly opens an existing database without migrating, so a viewer
+// (e.g. the operator running `logs`/`todos` with only group-read access to
+// the agent's DB) never attempts a write. It returns os.ErrNotExist if the
+// database file is absent.
+func OpenReadOnly(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate() error {
@@ -55,6 +75,16 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_id TEXT,
     reasoning    TEXT,
     created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS todos (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source           TEXT NOT NULL,
+    severity         TEXT,
+    title            TEXT NOT NULL,
+    detail           TEXT,
+    suggested_action TEXT,
+    status           TEXT NOT NULL DEFAULT 'open',
+    created_at       TEXT NOT NULL
 )`)
 	return err
 }

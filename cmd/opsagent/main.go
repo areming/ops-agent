@@ -8,16 +8,20 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/areming/ops-agent/internal/agent"
 	"github.com/areming/ops-agent/internal/cli"
 	"github.com/areming/ops-agent/internal/config"
+	"github.com/areming/ops-agent/internal/memory"
 	"github.com/areming/ops-agent/internal/secret"
 	"github.com/areming/ops-agent/internal/transport"
 )
@@ -39,6 +43,12 @@ func main() {
 		err = runBridge(args)
 	case "key":
 		err = runKey(args)
+	case "enroll":
+		err = runEnroll(args)
+	case "logs":
+		err = runLogs(args)
+	case "todos":
+		err = runTodos(args)
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -137,6 +147,109 @@ func readSecret() (string, error) {
 	return strings.TrimRight(string(b), "\r\n"), nil
 }
 
+// runEnroll deploys the agent to a remote Linux host. The model API key is
+// read from stdin so it never lands in shell history or the process list.
+func runEnroll(args []string) error {
+	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
+	provider := fs.String("provider", "deepseek", "model provider (openai|deepseek|anthropic)")
+	modelName := fs.String("model", "", "model name")
+	baseURL := fs.String("base-url", "", "optional API base URL override")
+	user := fs.String("user", "opsagent", "dedicated service user to run the agent as")
+	bin := fs.String("bin", "", "path to the linux agent binary (default: dist/opsagent-linux-<arch>)")
+	_ = fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) < 1 {
+		return fmt.Errorf("usage: opsagent enroll <host> [flags]  (API key read from stdin)")
+	}
+	apiKey, err := readSecret()
+	if err != nil {
+		return err
+	}
+	if apiKey == "" {
+		return fmt.Errorf("empty API key; nothing to enroll")
+	}
+	return cli.Enroll(rest[0], cli.EnrollOptions{
+		User:     *user,
+		Provider: *provider,
+		Model:    *modelName,
+		BaseURL:  *baseURL,
+		BinPath:  *bin,
+		APIKey:   apiKey,
+	})
+}
+
+// runLogs prints the most recent audit entries from the local state DB.
+func runLogs(args []string) error {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	n := fs.Int("n", 20, "number of entries to show")
+	db := fs.String("db", "", "state DB path (default: config)")
+	_ = fs.Parse(args)
+
+	store, err := openStore(*db)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Println("(no audit entries)")
+			return nil
+		}
+		return err
+	}
+	defer store.Close()
+
+	entries, err := store.RecentAudit(context.Background(), *n)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("(no audit entries)")
+		return nil
+	}
+	for _, e := range entries {
+		fmt.Printf("%s  [%s/%s] exit=%d  %s\n", e.CreatedAt, e.Decision, e.Risk, e.ExitCode, e.Command)
+	}
+	return nil
+}
+
+// runTodos prints open self-heal todos from the local state DB. The table
+// is populated by patrol (M5); until then this lists nothing.
+func runTodos(args []string) error {
+	fs := flag.NewFlagSet("todos", flag.ExitOnError)
+	db := fs.String("db", "", "state DB path (default: config)")
+	_ = fs.Parse(args)
+
+	store, err := openStore(*db)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Println("(no open todos)")
+			return nil
+		}
+		return err
+	}
+	defer store.Close()
+
+	todos, err := store.ListOpenTodos(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(todos) == 0 {
+		fmt.Println("(no open todos)")
+		return nil
+	}
+	for _, t := range todos {
+		fmt.Printf("#%d  [%s]  %s\n    %s\n", t.ID, t.Severity, t.Title, t.Detail)
+	}
+	return nil
+}
+
+// openStore opens the state DB read-only: logs/todos only read, and the
+// operator viewing an agent's DB may have only group-read access.
+func openStore(dbPath string) (*memory.Store, error) {
+	if dbPath == "" {
+		dbPath = config.Load().DBPath
+	}
+	return memory.OpenReadOnly(dbPath)
+}
+
 func runBridge(args []string) error {
 	fs := flag.NewFlagSet("_bridge", flag.ExitOnError)
 	socket := fs.String("socket", "", "local agent socket path")
@@ -144,24 +257,31 @@ func runBridge(args []string) error {
 	return transport.Bridge(resolveSocket(*socket))
 }
 
-// resolveSocket falls back to a per-OS temp path when none is given.
-// Later milestones source this from config / the runtime dir.
+// resolveSocket falls back to the fixed service path on Linux (where enroll
+// installs the agent) and a temp path elsewhere for development. serve and
+// _bridge share this default so an enrolled `connect <host>` needs no flag.
 func resolveSocket(p string) string {
 	if p != "" {
 		return p
+	}
+	if runtime.GOOS == "linux" {
+		return cli.AgentSocketPath
 	}
 	return filepath.Join(os.TempDir(), "opsagent.sock")
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `opsagent — lightweight ops assistant (M0 skeleton)
+	fmt.Fprint(os.Stderr, `opsagent — lightweight ops assistant
 
 usage:
-  opsagent serve [--socket PATH]
+  opsagent enroll <host> [flags]      deploy the agent to a Linux host
   opsagent connect <host> [--socket REMOTE_PATH] [--bin REMOTE_BIN]
   opsagent connect --local PATH
-  opsagent key set <name>            (value read from stdin)
+  opsagent serve [--socket PATH]
+  opsagent key set <name>             (value read from stdin)
   opsagent key list
-  opsagent _bridge [--socket PATH]   (internal; invoked over SSH)
+  opsagent logs [-n N] [--db PATH]    show the audit trail
+  opsagent todos [--db PATH]          show open self-heal todos
+  opsagent _bridge [--socket PATH]    (internal; invoked over SSH)
 `)
 }

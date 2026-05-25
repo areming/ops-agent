@@ -6,8 +6,13 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 )
+
+// prodStateDir is where a Linux service install keeps its state. enroll
+// provisions it owned by the dedicated opsagent user.
+const prodStateDir = "/var/lib/opsagent"
 
 type Config struct {
 	Provider string // openai | deepseek | anthropic
@@ -33,7 +38,7 @@ func Load() Config {
 		Model:         os.Getenv("OPSAGENT_MODEL"),
 		APIKey:        os.Getenv("OPSAGENT_API_KEY"),
 		BaseURL:       os.Getenv("OPSAGENT_BASE_URL"),
-		DBPath:        getenv("OPSAGENT_DB", filepath.Join(os.TempDir(), "opsagent.db")),
+		DBPath:        getenv("OPSAGENT_DB", filepath.Join(stateDir, "state.db")),
 		StateDir:      stateDir,
 		KeystorePath:  filepath.Join(stateDir, "keystore.json"),
 		MasterKeyPath: filepath.Join(stateDir, "master.key"),
@@ -42,9 +47,12 @@ func Load() Config {
 	}
 }
 
-// defaultStateDir prefers the per-user config dir (on the server this is the
-// opsagent user's $HOME/.config) and falls back to a temp path.
+// defaultStateDir is the fixed service path on Linux (where the agent runs
+// as a system service) and a per-user dir elsewhere for development.
 func defaultStateDir() string {
+	if runtime.GOOS == "linux" {
+		return prodStateDir
+	}
 	if dir, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(dir, "opsagent")
 	}

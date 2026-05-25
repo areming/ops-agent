@@ -35,6 +35,37 @@ func (s *Store) CountAudit(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// AuditRecord is a stored audit row read back for display, including its
+// timestamp.
+type AuditRecord struct {
+	AuditEntry
+	CreatedAt string
+}
+
+// RecentAudit returns up to n most recent audit rows, newest first.
+func (s *Store) RecentAudit(ctx context.Context, n int) ([]AuditRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT source, command, risk, reversible, decision, exit_code, output_excerpt, created_at
+FROM audit ORDER BY id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AuditRecord
+	for rows.Next() {
+		var r AuditRecord
+		var reversible int
+		if err := rows.Scan(&r.Source, &r.Command, &r.Risk, &reversible, &r.Decision,
+			&r.ExitCode, &r.Output, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.Reversible = reversible != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func b2i(b bool) int {
 	if b {
 		return 1
