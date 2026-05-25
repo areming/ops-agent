@@ -8,23 +8,25 @@
 
 ## 下次会话从哪开始
 
-**M3 已提交推送（commit `9476136`+`f3e780f`）。M4 代码完成 + 离线验收通过，待 live 验收 + 待提交。** 工作树有 M4 未提交改动。
+**M0–M4 全部已提交推送（M3=`9476136`+`f3e780f`，M4=`c0b521b`+`e64a69a`）。M5 代码完成 + 离线验收通过，待 live 验收 + 待提交。** 工作树有 M5 未提交改动。
 
-M4 已做（enroll 一键部署 + logs/todos 查看）：
-- `cli/enroll.go`：`opsagent enroll <host>` —— `ssh uname -m` 探架构 → `scp` 对应 `dist/opsagent-linux-<arch>` → `ssh host sudo -n bash -s` 跑幂等 bootstrap（建系统用户、装 /usr/local/bin、写 sudoers.d（visudo 校验）、写 systemd unit、base64→`key set api_key`、`usermod -aG opsagent $SUDO_USER`、`enable --now`）。纯函数 `archFromUname`/`buildSudoers`/`buildSystemdUnit`/`buildBootstrap` 全有单测。
-- 路径布局：bin `/usr/local/bin/opsagent`、state `/var/lib/opsagent`、socket `/run/opsagent/agent.sock`、`/etc/sudoers.d/opsagent`、`/etc/systemd/system/opsagent.service`。
-- config：Linux 默认 StateDir=`/var/lib/opsagent`、DBPath=`<state>/state.db`；`resolveSocket` Linux 默认 `/run/opsagent/agent.sock`（serve 与 _bridge 对齐 → `connect <host>` 免 flag）。
-- transport：socket chmod 0660（组成员可连，配合 enroll 把你加进 opsagent 组）。
-- `logs`/`todos` 子命令：**只读**打开本地 DB（`memory.OpenReadOnly`，免 migrate 写，操作者组只读也能看；DB 缺失友好提示）。`todos` 表已建（M5 才写数据）。
+M5 已做（巡检 + 自愈）：
+- `agent/patrol.go`：后台 patrol goroutine（`Serve` 内、server 生命周期 ctx 起，CLI 不开也跑）。启动先跑一次再按 interval。检查集 disk/load/key_services，每个 check 跑**只读**命令（`df -P`/`cat /proc/loadavg`+`nproc`/`systemctl is-active`）+ **纯函数解析**（`parseDiskUsage`/`parseLoadAvg`/`parseNproc`，均有单测）。
+- 自愈边界：被监控 unit `inactive/failed` → 候选 `sudo -n systemctl restart <unit>`，过 `safety.IsPatrolAutoRemedy`（仅 systemctl start/restart + 已配置 unit + 不撞危险规则，接受可选 sudo 前缀）→ 通过则执行 + `audit(source=patrol,decision=auto)`；disk/load 等无安全自愈 → 写 `todo`（不执行）；被 gate 拒的写操作 → `decision=skipped` audit + todo。
+- 持久化：新建 `patrol_runs` 表（每次扫描落 checks/findings JSON）；`audit` 加 `source` 形参（chat/patrol）+ `skipped` 决策值；`logs` 输出加 source 列。
+- config：`OPSAGENT_PATROL`(默认开)/`_INTERVAL`(5m)/`_CHECKS`(disk,load,key_services)/`_SERVICES`(默认空)/`_DISK_PCT`(90)/`_LOAD`(2.0/核)。**自动重启在 `_SERVICES` 列出 unit 前不会触发**（安全默认）。
 
-离线验收（本机已过）：全测试+vet+gofmt 干净；新增 enroll 生成物单测、todos/RecentAudit/OpenReadOnly 单测；交叉编译 amd64/arm64 仍 `statically linked`；`logs`/`todos` 空库/缺库友好；enroll 无 host 报清晰用法错误。
+离线验收（本机已过）：全测试+vet+gofmt 干净；新增 patrol 解析器单测、`IsPatrolAutoRemedy` 用例（含 sudo 前缀/拒绝面）、`runOnce` 集成测试（down unit→自动重启+auto audit+patrol_run；disk 超阈→只写 todo 不跑写命令）、patrol_runs 落库单测；交叉编译 amd64/arm64 仍 `statically linked`。
 
-**sudo 前提**：enroll 要求 SSH 用户能免密 sudo（NOPASSWD）或本就是 root；用 `sudo -n` 失败即清晰报错（不挂起）。
+**未动 enroll**：patrol 开箱即跑只读检查；要让某机自动重启服务，需操作者在该机设 `OPSAGENT_PATROL_SERVICES`（enroll 暂不代填，留作部署后手动一步）。
 
-**待 live 验收（需你那台 Linux 机，同时首次跑通 SSH 路径）**：干净机 `enroll <host>` → `connect <host>` 即用 → agent 跑在 opsagent 用户、提权走 sudo 白名单。外加 **M3 的两条 live**：知识档案影响回答、重连引用历史（需 DeepSeek key）。
-**待提交**：M4 改动尚未 commit。
+**待 live 验收（需你那台 Linux 机）**：
+- M5：列一个 unit 进 `OPSAGENT_PATROL_SERVICES` → 停掉它 → patrol 自动重启 + `opsagent logs` 见 patrol/auto 留痕；造 disk 超阈 → `opsagent todos` 看得到、不自动动手。
+- 仍欠的旧 live：M3 两条（知识档案影响回答、重连引用历史，需 DeepSeek key）+ M4 部署全链路（干净机 `enroll <host>` → `connect <host>` 即用 → 专用用户运行、提权走 sudo 白名单，首次跑通 SSH 路径）。
 
-下一步 = 你那边 live 验收（M3 两条 + M4 部署），过了提交 M4；然后 M5（巡检自愈，依赖已就绪的 key 持久化 + todos 表）。
+**待提交**：M5 改动尚未 commit。
+
+下一步 = 你那边 live 验收（M3/M4/M5），过了提交 M5；然后 M6（按需增强）。
 
 ---
 
@@ -66,20 +68,22 @@ M4 已做（enroll 一键部署 + logs/todos 查看）：
 - [x] `opsagent key set/list` 子命令（set 从 stdin 读值）
 - [x] 离线验收：单测/vet 过、交叉编译静态二进制、key 密文落盘无明文、serve 从 keystore 启动
 - [ ] live 验收：重开 session 引用历史；知识档案影响回答（需 DeepSeek key）
-- [ ] git commit + push M3
+- [x] git commit + push M3（`9476136`+`f3e780f`）
 
 ### M4 — enroll 一键部署　🟡（代码+离线验收过，待 live 验收+提交）
 - [x] `opsagent enroll <host>`：scp 二进制、建系统用户、生成 sudoers 白名单（仅 systemctl/journalctl）、装 systemd unit、初始化目录、provision key+provider
 - [x] `opsagent todos` / `logs` 查看入口（只读打开本地 DB）
 - [x] 离线验收：enroll 生成物单测（arch/sudoers/unit/bootstrap）、logs/todos 读 DB、交叉编译静态二进制、vet/gofmt 干净
 - [ ] live 验收：干净 Linux 机一条命令部署、`connect` 即用、专用用户运行、提权走 sudo 白名单（需你那台机，首次跑通 SSH 路径）
-- [ ] git commit + push M4
+- [x] git commit + push M4（`c0b521b`+`e64a69a`）
 
-### M5 — 巡检 + 自愈　⬜（依赖 M3 的 key 持久化）
-- [ ] `agent/patrol`：定时调度 + 检查集（disk/load/key_services）
-- [ ] 复用 Agent Loop + Safety Gate：可逆且白名单→自动执行；高危/不可逆→跳过 + 写 `todos`
-- [ ] `patrol_runs` / `todos` 落库，下次 CLI surface
-- [ ] 验收：可逆异常自动修复留痕；高危场景不执行、写待办、CLI 可见
+### M5 — 巡检 + 自愈　🟡（代码+离线验收过，待 live 验收+提交）
+- [x] `agent/patrol`：定时调度 + 检查集（disk/load/key_services），纯函数解析 + 单测
+- [x] 复用 Safety Gate + Tools + audit：可逆且白名单（`IsPatrolAutoRemedy`）→自动执行；高危/不可逆→跳过 + 写 `todos`（决策：v1 巡检不调模型，模型诊断后置 M6）
+- [x] `patrol_runs` 表 + `todos` 落库；`logs` 加 source 列 surface
+- [x] 离线验收：解析器/whitelist/runOnce 集成测试、patrol_runs 落库、vet/gofmt 干净、交叉编译静态二进制
+- [ ] live 验收：可逆异常（停被监控服务）自动修复留痕；高危场景（disk 超阈）不执行、写待办、CLI 可见
+- [ ] git commit + push M5
 
 ### M6 — 增强　⬜（按需）
 - [ ] 批量任务（CLI 侧 fan-out 到多台）
@@ -140,3 +144,8 @@ M4 已做（enroll 一键部署 + logs/todos 查看）：
 - **2026-05-25 M4 路径与默认（已定）**：Linux 上 config 默认走生产路径（state `/var/lib/opsagent`、socket `/run/opsagent/agent.sock`），dev(Windows/mac) 仍 UserConfigDir/temp。理由：serve/key/logs/_bridge 零参数对齐，`connect <host>` 免 flag。
 - **2026-05-25 M4 enroll 机制（已定）**：`scp` 二进制 + `ssh host sudo -n bash -s` 跑幂等 bootstrap 脚本（key 走 base64 经管道进 `key set`，不落远端磁盘）。前提：SSH 用户免密 sudo 或 root，`sudo -n` 失败即清晰报错。systemd unit 走精简版（不加重度沙箱，因 sudo 需 NoNewPrivileges=false）。
 - **2026-05-25 M4 logs/todos 读取（已定）**：只读打开本地 DB（`OpenReadOnly`，免 migrate 写），远端查看走 `ssh host opsagent logs`。理由：避免操作者组只读访问触发 migrate 写而失败；远端美化视图后置。
+
+- **2026-05-25 M5 自愈白名单（已定）**：要满足 ROADMAP「服务停了→自动重启」，但 `systemctl restart` 在现有 Safety Gate 是写操作=需确认，巡检无连接不能确认。选**窄白名单** `safety.IsPatrolAutoRemedy`：仅 `systemctl start/restart <已配置 unit>`（接受可选 sudo 前缀、不撞危险规则）才允许巡检无人值守执行；其余写操作一律跳过+写 todo。备选「只读到底（任何写都只写 todo）」被否，因不满足自动重启完成标准。chat 路径不受影响仍走 `Classify` 确认。
+- **2026-05-25 M5 巡检不调模型（已定）**：v1 检查全确定性（disk/load/key_services），自愈也确定性（重启挂掉的被监控 unit）。理由：ROADMAP 自评 M5「主要是组装」，且 M6 已明确「便宜模型巡检、强模型诊断」属后续；定时调模型增成本/不确定性/难离线测。模型驱动诊断留给 M6。
+- **2026-05-25 M5 自动重启默认安全（已定）**：patrol 默认开但只跑只读检查；自动重启**仅对** `OPSAGENT_PATROL_SERVICES` 显式列出的 unit 触发，默认空 → 开箱不会擅自动手。enroll 暂不代填该变量，留作部署后操作者手动一步。
+- **2026-05-25 M5 audit 扩展（已定）**：共享 `audit()` 加 `source` 形参（chat|patrol），新增 `skipped` 决策值（巡检拒绝执行的写操作留痕）；新建 `patrol_runs` 表存每次扫描 checks/findings JSON，对齐 ARCHITECTURE 数据模型。
