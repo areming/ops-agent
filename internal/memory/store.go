@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS audit (
     exit_code      INTEGER,
     output_excerpt TEXT,
     created_at     TEXT    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    role         TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    tool_calls   TEXT,
+    tool_call_id TEXT,
+    reasoning    TEXT,
+    created_at   TEXT NOT NULL
 )`)
 	return err
 }

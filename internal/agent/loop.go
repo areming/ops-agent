@@ -20,12 +20,12 @@ const maxToolRounds = 25
 // runTurn drives one user turn to completion: stream the model reply,
 // run any tool calls (through the safety gate), feed results back, and
 // repeat until the model answers with no further tool calls.
-func runTurn(ctx context.Context, conn *transport.Conn, prov model.Provider, reg *tools.Registry, store *memory.Store, sess *session) error {
-	modelTools := toModelTools(reg)
+func (srv *server) runTurn(ctx context.Context, conn *transport.Conn, sess *session) error {
+	modelTools := toModelTools(srv.reg)
 
 	for range maxToolRounds {
-		ch, err := prov.StreamChat(ctx, model.ChatRequest{
-			System:   systemPrompt,
+		ch, err := srv.prov.StreamChat(ctx, model.ChatRequest{
+			System:   srv.systemPrompt,
 			Messages: sess.msgs,
 			Tools:    modelTools,
 		})
@@ -58,14 +58,14 @@ func runTurn(ctx context.Context, conn *transport.Conn, prov model.Provider, reg
 		}
 
 		if len(calls) == 0 {
-			sess.addAssistant(text.String(), reasoning.String())
+			sess.addAssistant(ctx, text.String(), reasoning.String())
 			return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
 		}
 
-		sess.addAssistantWithCalls(text.String(), reasoning.String(), calls)
+		sess.addAssistantWithCalls(ctx, text.String(), reasoning.String(), calls)
 		for _, call := range calls {
-			result := execute(ctx, conn, reg, store, call)
-			sess.addToolResult(call.ID, result)
+			result := srv.execute(ctx, conn, call)
+			sess.addToolResult(ctx, call.ID, result)
 		}
 	}
 
@@ -76,8 +76,8 @@ func runTurn(ctx context.Context, conn *transport.Conn, prov model.Provider, reg
 // execute classifies one tool call, asks the user when needed, runs it,
 // audits state changes, and returns the result text to feed back to the
 // model.
-func execute(ctx context.Context, conn *transport.Conn, reg *tools.Registry, store *memory.Store, call model.ToolCall) string {
-	tool, ok := reg.Get(call.Name)
+func (srv *server) execute(ctx context.Context, conn *transport.Conn, call model.ToolCall) string {
+	tool, ok := srv.reg.Get(call.Name)
 	if !ok {
 		return "error: unknown tool " + call.Name
 	}
@@ -98,7 +98,7 @@ func execute(ctx context.Context, conn *transport.Conn, reg *tools.Registry, sto
 			return "error: confirmation failed: " + err.Error()
 		}
 		if !approved {
-			audit(ctx, store, display, verdict, "denied", 0, "")
+			audit(ctx, srv.store, display, verdict, "denied", 0, "")
 			return "user denied this action; it was not run"
 		}
 		decision = "approved"
@@ -115,12 +115,12 @@ func execute(ctx context.Context, conn *transport.Conn, reg *tools.Registry, sto
 	res, err := tool.Execute(ctx, call.Arguments)
 	if err != nil {
 		if !tool.ReadOnly() {
-			audit(ctx, store, display, verdict, decision, -1, err.Error())
+			audit(ctx, srv.store, display, verdict, decision, -1, err.Error())
 		}
 		return "tool error: " + err.Error()
 	}
 	if !tool.ReadOnly() {
-		audit(ctx, store, display, verdict, decision, res.ExitCode, res.Output)
+		audit(ctx, srv.store, display, verdict, decision, res.ExitCode, res.Output)
 	}
 	return formatResult(res)
 }

@@ -15,18 +15,33 @@ import (
 	"github.com/areming/ops-agent/internal/config"
 	"github.com/areming/ops-agent/internal/memory"
 	"github.com/areming/ops-agent/internal/model"
+	"github.com/areming/ops-agent/internal/secret"
 	"github.com/areming/ops-agent/internal/tools"
 	"github.com/areming/ops-agent/internal/transport"
 )
+
+// apiKeySecretName is the keystore entry holding the model provider's API
+// key when it is not supplied via OPSAGENT_API_KEY.
+const apiKeySecretName = "api_key"
+
+// server holds the per-process dependencies shared across connections.
+type server struct {
+	prov         model.Provider
+	reg          *tools.Registry
+	store        *memory.Store
+	systemPrompt string // base prompt with knowledge files folded in
+	historyDepth int
+}
 
 // Serve builds the model provider from configuration, then listens on
 // the unix socket and serves connections until the listener errors.
 func Serve(socketPath string) error {
 	cfg := config.Load()
-	if cfg.APIKey == "" {
-		return fmt.Errorf("OPSAGENT_API_KEY is not set")
+	apiKey, err := resolveAPIKey(cfg)
+	if err != nil {
+		return err
 	}
-	prov, err := model.New(cfg.Provider, cfg.APIKey, cfg.BaseURL, cfg.Model)
+	prov, err := model.New(cfg.Provider, apiKey, cfg.BaseURL, cfg.Model)
 	if err != nil {
 		return err
 	}
@@ -37,7 +52,18 @@ func Serve(socketPath string) error {
 	}
 	defer store.Close()
 
-	reg := tools.NewRegistry(tools.Shell{}, tools.ReadFile{}, tools.WriteFile{})
+	knowledge, err := memory.LoadKnowledge(cfg.KnowledgeDir)
+	if err != nil {
+		return err
+	}
+
+	srv := &server{
+		prov:         prov,
+		reg:          tools.NewRegistry(tools.Shell{}, tools.ReadFile{}, tools.WriteFile{}),
+		store:        store,
+		systemPrompt: composeSystemPrompt(knowledge),
+		historyDepth: cfg.HistoryDepth,
+	}
 
 	ln, err := transport.Listen(socketPath)
 	if err != nil {
@@ -51,17 +77,41 @@ func Serve(socketPath string) error {
 		if err != nil {
 			return err
 		}
-		go handle(nc, prov, reg, store)
+		go srv.handle(nc)
 	}
 }
 
-func handle(nc net.Conn, prov model.Provider, reg *tools.Registry, store *memory.Store) {
+// resolveAPIKey prefers OPSAGENT_API_KEY (dev override) and otherwise reads
+// the key from the encrypted keystore, so production keeps no plaintext key
+// in config, environment, or the process list.
+func resolveAPIKey(cfg config.Config) (string, error) {
+	if cfg.APIKey != "" {
+		return cfg.APIKey, nil
+	}
+	ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("open keystore: %w", err)
+	}
+	key, ok, err := ks.Get(apiKeySecretName)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("no API key: set OPSAGENT_API_KEY or run `opsagent key set %s`", apiKeySecretName)
+	}
+	return key, nil
+}
+
+func (srv *server) handle(nc net.Conn) {
 	defer nc.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	conn := transport.NewConn(nc)
-	sess := &session{}
+	sess := newSession(srv.store, srv.historyDepth)
+	if err := sess.hydrate(ctx); err != nil {
+		log.Printf("load history: %v", err)
+	}
 	for {
 		f, err := conn.ReadFrame()
 		if err != nil {
@@ -79,8 +129,8 @@ func handle(nc net.Conn, prov model.Provider, reg *tools.Registry, store *memory
 			writeError(conn, "decode payload: "+err.Error())
 			continue
 		}
-		sess.addUser(text)
-		if err := runTurn(ctx, conn, prov, reg, store, sess); err != nil {
+		sess.addUser(ctx, text)
+		if err := srv.runTurn(ctx, conn, sess); err != nil {
 			log.Printf("turn: %v", err)
 			return
 		}

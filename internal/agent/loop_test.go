@@ -40,7 +40,7 @@ type stubTool struct {
 	executed *bool
 }
 
-func (stubTool) Name() string                  { return "do_thing" }
+func (stubTool) Name() string                   { return "do_thing" }
 func (stubTool) Description() string            { return "stub" }
 func (stubTool) Schema() json.RawMessage        { return json.RawMessage(`{"type":"object"}`) }
 func (stubTool) ReadOnly() bool                 { return false }
@@ -71,11 +71,12 @@ func runScenario(t *testing.T, approve bool) (executed bool, finalText string, a
 	agentSide := transport.NewConn(c1)
 	clientSide := transport.NewConn(c2)
 
-	sess := &session{}
-	sess.addUser("do it")
+	srv := &server{prov: prov, reg: reg, store: store, systemPrompt: baseSystemPrompt}
+	sess := newSession(store, 0)
+	sess.addUser(context.Background(), "do it")
 
 	errc := make(chan error, 1)
-	go func() { errc <- runTurn(context.Background(), agentSide, prov, reg, store, sess) }()
+	go func() { errc <- srv.runTurn(context.Background(), agentSide, sess) }()
 
 	var text strings.Builder
 loop:
