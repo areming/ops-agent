@@ -2,20 +2,26 @@
 
 > 唯一执行事实来源。设计见 REQUIREMENTS / TECH_STACK / ARCHITECTURE / ROADMAP（这些只讲设计，不记执行状态）。
 > 图例：✅ 完成并验证 ｜ 🟡 代码完成待验证/待提交 ｜ ⬜ 未开始
-> 最后更新：2026-05-24
+> 最后更新：2026-05-25
 
 ---
 
 ## 下次会话从哪开始
 
-**M1/M2 已 live 验收通过**（DeepSeek 真实模型，2026-05-24）。M0/M1/M2 代码均已提交推送。
-验收结论：
-- M1 纯对话流式 ✅
-- M2 工具循环 ✅：模型→tool_call→安全闸门判 Confirm→确认握手→执行→审计落库（`decision=approved`），多轮工具链（write_file→pwd→…）也正常。
-- **发现一个待决缺陷**：推理/thinking 模型（如 `deepseek-v4-pro`）在工具执行后的第二轮会返回 400 `reasoning_content ... must be passed back`——我们的 OpenAI 适配器没捕获/回放 `reasoning_content`。非推理模型 `deepseek-chat` 全程正常。详见决策日志与"跨里程碑待办"。
+**M3 代码完成 + 离线验收通过，待 live 验收 + 待提交。** 工作树有未提交改动（见 git status）。
 
-**推理模型 `reasoning_content` 修复已完成并 live 复跑通过**（2026-05-24，见 M2 段与决策日志）。改动 6 文件未提交（等你说"提交"）。
-**下一步**：提交本次修复 → 进 **M3（记忆 + Keystore 加密）**，第一步撞加密库依赖（NaCl secretbox / age，二选一需你点头），动手前走 explore→plan→等"go"。
+M3 已做：
+- `secret/keystore`：secretbox 加密存取（主密钥独立 0600 文件，重启自解，无人值守）；`opsagent key set/list` 子命令（set 从 stdin 读值，绝不进 shell history）。
+- `memory/history`：会话消息落 SQLite，新连接注水最近 N 条（默认 50，`OPSAGENT_HISTORY`），单一滚动线程。
+- `memory/knowledge`：启动加载 `*.md` 拼进系统提示。
+- config 加 StateDir + 派生路径；serve 优先 env key、否则从 keystore 取 `api_key`。
+
+离线验收（本机已过）：全测试 + vet 过；新增 keystore/history/knowledge 单测；交叉编译 linux amd64/arm64 仍 `statically linked`（x/crypto 纯 Go，CGO 仍关）；`key set/list` 落密文无明文、主密钥 32B；serve 能从 keystore 启动、无 key 时报清晰错误。
+
+**待 live 验收（需你那边 DeepSeek key，沿用之前流程）**：① 知识档案影响回答 ② 重连引用到此前历史。
+**待提交**：M3 改动尚未 commit（你没说提交我就没动）。
+
+下一步 = live 验收 M3，过了就提交；然后 M4（enroll 一键部署）。
 
 ---
 
@@ -50,12 +56,14 @@
 - [x] git commit + push M2（`66db745` + `3fe4cf1`，已推送）
 - [x] DeepSeek live 验收：真实模型→生成命令→确认握手→执行→audit 落库（2026-05-24，deepseek-chat 全程通；附带发现推理模型 reasoning_content 缺陷，见决策日志）
 
-### M3 — 记忆 + Keystore 加密　⬜
-- [ ] `memory/knowledge`：加载 Markdown 知识档案，注入系统提示
-- [ ] `memory/store`：会话历史持久化 + 跨 session 回看
-- [ ] `secret/keystore`：API key 加密存取　⚠️依赖待决：加密库（NaCl secretbox / age）
-- [ ] `opsagent key set/list` 子命令
-- [ ] 验收：重开 session 引用历史；知识档案影响回答；key 密文落盘、重启自恢复、配置无明文 key
+### M3 — 记忆 + Keystore 加密　🟡（代码+离线验收过，待 live 验收+提交）
+- [x] `memory/knowledge`：加载 Markdown 知识档案（`knowledge.go`），注入系统提示
+- [x] `memory/store`：会话历史持久化（`history.go`：messages 表 + Append/Recent）+ 跨 session 回看（单一滚动线程）
+- [x] `secret/keystore`：API key 加密存取（secretbox，主密钥独立 0600 文件）
+- [x] `opsagent key set/list` 子命令（set 从 stdin 读值）
+- [x] 离线验收：单测/vet 过、交叉编译静态二进制、key 密文落盘无明文、serve 从 keystore 启动
+- [ ] live 验收：重开 session 引用历史；知识档案影响回答（需 DeepSeek key）
+- [ ] git commit + push M3
 
 ### M4 — enroll 一键部署　⬜
 - [ ] `opsagent enroll <host>`：传二进制、建专用用户、生成 sudoers 白名单、装 systemd unit、初始化配置与目录
@@ -77,8 +85,8 @@
 
 ### 跨里程碑待办
 - [ ] M0 SSH 路径 live 验收（需你那台 Linux 机器）
-- [ ] 依赖决策待点头：加密库(M3) / bubbletea(M6) / TOML(M6)　（SQLite(M2) 已批准并落地）
-- [x] 推理模型支持（已修，2026-05-24，待提交）：OpenAI 适配器捕获 `delta.reasoning_content`（发 `EventReasoningDelta`），loop 累积存到 `Message.Reasoning`，`buildOpenAIMessages` 仅在非空时回传 `reasoning_content`。新增两个离线测试；live 用 `deepseek-v4-pro` 复跑第二轮不再 400。非推理模型零影响。Anthropic extended thinking 仍未做（另一套 thinking block 机制，等真用 Claude 推理再列）。
+- [ ] 依赖决策待点头：bubbletea(M6) / TOML(M6)　（SQLite(M2)、x/crypto secretbox(M3) 已批准并落地）
+- [x] 推理模型支持（已修+已推送 `95019ae`，2026-05-24）：OpenAI 适配器捕获 `delta.reasoning_content`（发 `EventReasoningDelta`），loop 累积存到 `Message.Reasoning`，`buildOpenAIMessages` 仅在非空时回传 `reasoning_content`。新增两个离线测试；live 用 `deepseek-v4-pro` 复跑第二轮不再 400。非推理模型零影响。Anthropic extended thinking 仍未做（另一套 thinking block 机制，等真用 Claude 推理再列）。
 
 ---
 
@@ -114,3 +122,9 @@
 - **2026-05-24 M2 适配器范围（已定）**：OpenAI 和 Anthropic 适配器都实现工具调用（含各自的消息结构：OpenAI tool_calls / Anthropic tool_use+tool_result）。DeepSeek（OpenAI 路径）做现场验收，Anthropic 路径离线测试覆盖。
 - **2026-05-24 live 验收发现（已修）**：DeepSeek 推理模型 `deepseek-v4-pro` 在工具执行后的续问轮返回 400 `The reasoning_content in the thinking mode must be passed back to the API`。根因：OpenAI 适配器未捕获/回放 assistant 的 `reasoning_content`。修法：捕获 `delta.reasoning_content` → `EventReasoningDelta` → 存 `Message.Reasoning` → 仅非空时回传。live 复跑已通过，非推理模型零影响。
 - **2026-05-24 部署约束（用户提醒）**：服务器全是 Ubuntu，CPU 可能很老（用户曾装 Claude Code CLI 失败）。坚持 `CGO_ENABLED=0` 纯 Go 静态二进制、`GOAMD64` 不高于默认 v1、不引需 CGO 或现代指令的依赖。已核对 build.ps1 符合（CGO 关、无 GOAMD64 设置、ELF statically linked）。
+
+- **2026-05-25 M3 加密库（已定）**：选 `golang.org/x/crypto/nacl/secretbox`（XSalsa20+Poly1305），不选 age。理由：只需"本地主密钥加密几个 key"，secretbox API 极简、纯 Go、几乎无额外传递依赖，最契合"最小依赖/纯静态二进制"。项目第二个第三方依赖（已批准）。
+- **2026-05-25 M3 主密钥模型（已定）**：32B 随机主密钥落独立 0600 文件，与密文 keystore 分离。理由：决策日志要求"重启自恢复、自愈不中断"→ 启动不能让人输口令，必须无人值守自解，主密钥就得机器可读。**边界（明说不掩盖）**：这防的是明文 key 进配置/环境变量/进程列表/备份，**不防**能读到 opsagent 用户文件的攻击者——无人值守自解的固有取舍。
+- **2026-05-25 M3 keystore 存储（已定）**：密文存独立 `keystore.json`（非复用 sqlite）。理由：secrets 与运营数据（audit/会话）生命周期分离、权限单独 chmod、备份 DB 不连带导出密钥、secret 包不依赖 sqlite。
+- **2026-05-25 M3 会话记忆（已定）**：单一滚动线程，新连接注水最近 N 条（默认 50）。理由：单服务器+单运维场景最简且够用；带 session ID 要改 transport 握手和 CLI，超出 M3 验收。
+- **2026-05-25 M3 API key 优先级（已定）**：`OPSAGENT_API_KEY` 存在则用（dev 覆盖），否则从 keystore 取 `api_key`。理由：满足"配置无明文 key"同时保留 dev 便利。
