@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,17 +54,42 @@ type PatrolConfig struct {
 	LoadPer  float64  // flag when 1-min load / CPU count is at or above this
 }
 
-// Load reads OPSAGENT_* environment variables.
+// fileConfig is the persistable subset of Config, stored as JSON at
+// StateDir/config.json. It holds only the model-selection fields a user
+// changes in-session (onboarding, /models) and that must survive a restart;
+// the API key lives in the keystore and paths are derived, so neither is
+// stored here.
+type fileConfig struct {
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
+	DiagProvider string `json:"diag_provider,omitempty"`
+	DiagModel    string `json:"diag_model,omitempty"`
+	DiagBaseURL  string `json:"diag_base_url,omitempty"`
+}
+
+// configFileName is the on-disk config under StateDir.
+const configFileName = "config.json"
+
+// Load resolves settings with precedence env > config.json > built-in
+// default, so a value set in-session persists while OPSAGENT_* env vars (set
+// by the systemd unit or for dev) still win and never break an existing
+// install.
 func Load() Config {
 	stateDir := getenv("OPSAGENT_STATE_DIR", defaultStateDir())
+	fc := loadFile(filepath.Join(stateDir, configFileName))
+
+	provider := pick("OPSAGENT_PROVIDER", fc.Provider, "openai")
+	model := pick("OPSAGENT_MODEL", fc.Model, "")
+	baseURL := pick("OPSAGENT_BASE_URL", fc.BaseURL, "")
 	return Config{
-		Provider:      getenv("OPSAGENT_PROVIDER", "openai"),
-		Model:         os.Getenv("OPSAGENT_MODEL"),
+		Provider:      provider,
+		Model:         model,
 		APIKey:        os.Getenv("OPSAGENT_API_KEY"),
-		BaseURL:       os.Getenv("OPSAGENT_BASE_URL"),
-		DiagProvider:  getenv("OPSAGENT_DIAG_PROVIDER", getenv("OPSAGENT_PROVIDER", "openai")),
-		DiagModel:     getenv("OPSAGENT_DIAG_MODEL", os.Getenv("OPSAGENT_MODEL")),
-		DiagBaseURL:   getenv("OPSAGENT_DIAG_BASE_URL", os.Getenv("OPSAGENT_BASE_URL")),
+		BaseURL:       baseURL,
+		DiagProvider:  pick("OPSAGENT_DIAG_PROVIDER", fc.DiagProvider, provider),
+		DiagModel:     pick("OPSAGENT_DIAG_MODEL", fc.DiagModel, model),
+		DiagBaseURL:   pick("OPSAGENT_DIAG_BASE_URL", fc.DiagBaseURL, baseURL),
 		DBPath:        getenv("OPSAGENT_DB", filepath.Join(stateDir, "state.db")),
 		StateDir:      stateDir,
 		KeystorePath:  filepath.Join(stateDir, "keystore.json"),
@@ -72,6 +98,59 @@ func Load() Config {
 		HistoryDepth:  getenvInt("OPSAGENT_HISTORY", 50),
 		Patrol:        loadPatrol(),
 	}
+}
+
+// Save writes the model-selection fields to StateDir/config.json so a choice
+// made in-session survives a restart. The write is atomic (temp + rename) and
+// the file is 0600 since it names the provider an install talks to. It does
+// not persist the API key or derived paths.
+func Save(cfg Config) error {
+	fc := fileConfig{
+		Provider:     cfg.Provider,
+		Model:        cfg.Model,
+		BaseURL:      cfg.BaseURL,
+		DiagProvider: cfg.DiagProvider,
+		DiagModel:    cfg.DiagModel,
+		DiagBaseURL:  cfg.DiagBaseURL,
+	}
+	b, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o750); err != nil {
+		return err
+	}
+	path := filepath.Join(cfg.StateDir, configFileName)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// loadFile reads config.json if present. A missing or unreadable file yields
+// an empty fileConfig (env and defaults still drive Load); a malformed file
+// is likewise ignored rather than failing startup, since env can carry every
+// field.
+func loadFile(path string) fileConfig {
+	var fc fileConfig
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fc
+	}
+	_ = json.Unmarshal(b, &fc)
+	return fc
+}
+
+// pick resolves one field with precedence env > file > default.
+func pick(envKey, fileVal, def string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	if fileVal != "" {
+		return fileVal
+	}
+	return def
 }
 
 // loadPatrol reads OPSAGENT_PATROL_* variables. Patrol runs read-only
