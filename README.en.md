@@ -41,9 +41,9 @@ The agent runs as a dedicated `opsagent` user; privilege escalation goes through
 ./build.ps1
 ```
 
-Cross-compiles to `./dist/opsagent-{linux-amd64,linux-arm64,windows-amd64}`, each a single static binary (`file dist/opsagent-linux-amd64` shows `statically linked`).
+Cross-compiles to `./dist/ops-{linux-amd64,linux-arm64,windows-amd64}`, each a single static binary (`file dist/ops-linux-amd64` shows `statically linked`).
 
-On Windows, an optional one-step local install (puts `opsagent` on PATH + enables ssh-agent, so you can just type `opsagent`):
+On Windows, an optional one-step local install (puts `ops` on PATH + enables ssh-agent, so you can just type `ops`):
 
 ```powershell
 ./install.ps1
@@ -53,7 +53,7 @@ On Windows, an optional one-step local install (puts `opsagent` on PATH + enable
 
 ### Prerequisite: SSH setup
 
-opsagent drives the target through your local `ssh`/`scp`, so before deploying make sure:
+ops drives the target through your local `ssh`/`scp`, so before deploying make sure:
 
 1. **`ssh <host>` works without a password** (key auth). If your private key has a passphrase, load it into ssh-agent so you aren't prompted repeatedly:
    - Windows: `./install.ps1` (enables ssh-agent), then `ssh-add $env:USERPROFILE\.ssh\id_ed25519`.
@@ -77,7 +77,7 @@ opsagent drives the target through your local `ssh`/`scp`, so before deploying m
 **Easiest — guided wizard** (recommended for first use):
 
 ```bash
-opsagent setup
+ops setup
 ```
 
 It walks you through provider / model / target host (and optionally which services patrol should watch and auto-restart, and a diagnosis model), **checks SSH and passwordless sudo** (with fix hints if either fails), then deploys and verifies the service is up. You only answer questions — no flags to remember.
@@ -86,34 +86,37 @@ Or deploy manually in one command:
 
 ```bash
 # the API key is read from stdin, so it never lands in shell history / the process list
-echo "$DEEPSEEK_KEY" | opsagent enroll web1 --provider deepseek --model deepseek-chat
+echo "$DEEPSEEK_KEY" | ops enroll web1 --provider deepseek --model deepseek-chat
 ```
 
 Optional flags: `--services nginx,sshd` (units patrol watches and auto-restarts), `--diag-model <model>` (diagnosis model, reusing the main provider/key), `--user`, `--base-url`, `--bin`.
 
 Over SSH, `enroll` detects the target architecture → scp's the matching binary → runs an idempotent privileged bootstrap that:
 
-- creates the system user `opsagent` (override with `--user`) and installs the binary to `/usr/local/bin/opsagent`;
+- creates the system user `opsagent` (override with `--user`) and installs the binary to `/usr/local/bin/ops` (with an `opsagent` symlink for the old name);
 - writes the sudoers allowlist (validated with `visudo`, NOPASSWD for systemctl/journalctl only);
 - writes the systemd unit (the API key is **not** in the unit — only in the encrypted keystore);
 - pipes the base64'd key into the keystore (never written to the remote disk);
 - adds your login user to the `opsagent` group (for `connect`) and starts the service with `enable --now`.
 
-Then `opsagent connect web1` works (if the first connect is denied, re-login so the new group membership applies).
+Then `ops connect web1` works (if the first connect is denied, re-login so the new group membership applies).
 
-Main `enroll` flags: `--provider` (default `deepseek`), `--model`, `--base-url`, `--user` (default `opsagent`), `--bin` (default `dist/opsagent-linux-<arch>`).
+Main `enroll` flags: `--provider` (default `deepseek`), `--model`, `--base-url`, `--user` (default `opsagent`), `--bin` (default `dist/ops-linux-<arch>`).
 
 ## Usage
 
 ```bash
-opsagent connect <host>                          # open a conversation from your laptop (SSH)
-opsagent connect --local /run/opsagent/agent.sock # on the server itself (no SSH; user must be in the opsagent group)
-opsagent run -c "<instruction>" <host>... [--yes] # fan-out: one instruction across hosts
-opsagent logs [-n N]                             # audit trail (with source: chat/patrol)
-opsagent todos                                   # patrol / self-heal todos
-opsagent key set <name>                          # store a secret (value read from stdin)
-opsagent key list
+ops                                         # local conversation (onboards if unconfigured); /help for commands
+ops connect <host>                          # open a conversation from your laptop (SSH)
+ops connect --local /run/opsagent/agent.sock # on the server itself (no SSH; user must be in the opsagent group)
+ops run -c "<instruction>" <host>... [--yes] # fan-out: one instruction across hosts
+ops logs [-n N]                             # audit trail (with source: chat/patrol)
+ops todos                                   # patrol / self-heal todos
+ops key set <name>                          # store a secret (value read from stdin)
+ops key list
 ```
+
+Inside a conversation, slash commands (matching common CLIs): `/models [name]` view/switch the model of the machine this session talks to, `/logs [N]` view the audit trail, `/clear` reset the current conversation, `/help`, `/quit`.
 
 Details of patrol and fan-out (boundaries, safe defaults, verification) are in [ONBOARDING.md](ONBOARDING.md) §6/§7.
 

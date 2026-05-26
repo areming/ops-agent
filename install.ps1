@@ -1,18 +1,18 @@
-# Install opsagent locally on Windows: copy the binary onto PATH and prepare
+# Install ops locally on Windows: copy the binary onto PATH and prepare
 # ssh-agent so SSH (and thus enroll/connect) work without re-entering the key
 # passphrase. Run from the repo root after ./build.ps1. Re-runnable.
 $ErrorActionPreference = "Stop"
 
-$src = Join-Path $PSScriptRoot "dist\opsagent-windows-amd64.exe"
+$src = Join-Path $PSScriptRoot "dist\ops-windows-amd64.exe"
 if (-not (Test-Path $src)) {
     Write-Error "未找到 $src —— 请先运行 ./build.ps1"
 }
 
 # 1) 拷贝到一个用户级目录
-$destDir = Join-Path $env:LOCALAPPDATA "opsagent"
+$destDir = Join-Path $env:LOCALAPPDATA "ops"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-Copy-Item $src (Join-Path $destDir "opsagent.exe") -Force
-Write-Host "✓ 已安装 opsagent.exe -> $destDir"
+Copy-Item $src (Join-Path $destDir "ops.exe") -Force
+Write-Host "✓ 已安装 ops.exe -> $destDir"
 
 # 2) 加入用户 PATH（幂等）
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -49,4 +49,4 @@ Write-Host "下一步："
 Write-Host "  1) 把私钥加载进 agent（只需一次，输一次 passphrase）："
 Write-Host "       ssh-add $env:USERPROFILE\.ssh\id_ed25519"
 Write-Host "  2) 新开一个终端，直接用（无需 .\dist\... 前缀）："
-Write-Host "       opsagent setup"
+Write-Host "       ops setup"

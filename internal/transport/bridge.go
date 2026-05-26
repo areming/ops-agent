@@ -6,7 +6,7 @@ import (
 )
 
 // Bridge copies bytes between this process's stdio and the agent's unix
-// socket at path. It runs on the remote host (invoked as `opsagent
+// socket at path. It runs on the remote host (invoked as `ops
 // _bridge` over SSH) so the local CLI's SSH stdin/stdout is wired
 // straight through to the agent socket. It returns when either
 // direction closes.
