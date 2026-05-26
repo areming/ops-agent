@@ -26,12 +26,14 @@ const (
 // EnrollOptions configures a deployment. APIKey is provisioned into the
 // remote keystore; it is never written to the unit or to disk in plaintext.
 type EnrollOptions struct {
-	User     string // dedicated service user
-	Provider string
-	Model    string
-	BaseURL  string
-	BinPath  string // local linux binary; empty -> dist/opsagent-linux-<arch>
-	APIKey   string
+	User      string // dedicated service user
+	Provider  string
+	Model     string
+	BaseURL   string
+	BinPath   string // local linux binary; empty -> dist/opsagent-linux-<arch>
+	APIKey    string
+	Services  string // comma-separated units patrol watches and may auto-restart
+	DiagModel string // optional diagnosis model (reuses the main provider/key)
 }
 
 // Enroll deploys the agent to host over SSH: detect the architecture, copy
@@ -124,6 +126,12 @@ func buildSystemdUnit(opts EnrollOptions) string {
 	}
 	if opts.BaseURL != "" {
 		fmt.Fprintf(&env, "Environment=OPSAGENT_BASE_URL=%s\n", opts.BaseURL)
+	}
+	if opts.Services != "" {
+		fmt.Fprintf(&env, "Environment=OPSAGENT_PATROL_SERVICES=%s\n", opts.Services)
+	}
+	if opts.DiagModel != "" {
+		fmt.Fprintf(&env, "Environment=OPSAGENT_DIAG_MODEL=%s\n", opts.DiagModel)
 	}
 	return fmt.Sprintf(`[Unit]
 Description=opsagent resident ops assistant

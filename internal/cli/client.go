@@ -22,7 +22,7 @@ func ConnectLocal(socketPath string) error {
 		return err
 	}
 	defer nc.Close()
-	return repl(transport.NewConn(nc))
+	return repl(transport.NewConn(nc), "local")
 }
 
 // ConnectSSH runs `opsagent _bridge` on host over SSH and speaks the
@@ -33,7 +33,7 @@ func ConnectSSH(host, remoteSocket, remoteBin string) error {
 	if err != nil {
 		return err
 	}
-	rerr := repl(conn)
+	rerr := repl(conn, host)
 	if cerr := cleanup(); rerr == nil {
 		rerr = cerr
 	}
@@ -71,12 +71,13 @@ func sshBridge(host, remoteSocket, remoteBin string) (*transport.Conn, func() er
 
 // repl reads a line, sends it as UserInput, then handles the streamed
 // reply (text, tool activity, confirmations) until Done. EOF on stdin
-// ends the session.
-func repl(conn *transport.Conn) error {
-	fmt.Println("opsagent connected. type a message (Ctrl-D to quit).")
+// ends the session. label identifies the connected host in the banner and
+// prompt so multiple sessions are easy to tell apart.
+func repl(conn *transport.Conn, label string) error {
+	fmt.Printf("opsagent @ %s — type a message (Ctrl-D to quit).\n", label)
 	in := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("> ")
+		fmt.Printf("[%s] > ", label)
 		if !in.Scan() {
 			return in.Err()
 		}

@@ -43,13 +43,18 @@ func TestBuildSudoers(t *testing.T) {
 }
 
 func TestBuildSystemdUnit(t *testing.T) {
-	unit := buildSystemdUnit(EnrollOptions{User: "opsagent", Provider: "deepseek", Model: "deepseek-chat"})
+	unit := buildSystemdUnit(EnrollOptions{
+		User: "opsagent", Provider: "deepseek", Model: "deepseek-chat",
+		Services: "nginx,sshd", DiagModel: "deepseek-v4-pro",
+	})
 	for _, want := range []string{
 		"User=opsagent",
 		"Group=opsagent",
 		"RuntimeDirectory=opsagent",
 		"Environment=OPSAGENT_PROVIDER=deepseek",
 		"Environment=OPSAGENT_MODEL=deepseek-chat",
+		"Environment=OPSAGENT_PATROL_SERVICES=nginx,sshd",
+		"Environment=OPSAGENT_DIAG_MODEL=deepseek-v4-pro",
 		"ExecStart=/usr/local/bin/opsagent serve --socket /run/opsagent/agent.sock",
 		"WantedBy=multi-user.target",
 	} {
@@ -70,6 +75,12 @@ func TestBuildSystemdUnitOmitsEmptyOptionals(t *testing.T) {
 	}
 	if strings.Contains(unit, "OPSAGENT_BASE_URL=") {
 		t.Errorf("unit should omit empty base url:\n%s", unit)
+	}
+	if strings.Contains(unit, "OPSAGENT_PATROL_SERVICES=") {
+		t.Errorf("unit should omit empty patrol services:\n%s", unit)
+	}
+	if strings.Contains(unit, "OPSAGENT_DIAG_MODEL=") {
+		t.Errorf("unit should omit empty diag model:\n%s", unit)
 	}
 }
 

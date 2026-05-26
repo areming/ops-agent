@@ -35,6 +35,14 @@ func Setup() error {
 	if err != nil {
 		return err
 	}
+	services, err := prompt(r, "巡检监控并自动重启哪些服务（逗号分隔，回车跳过）", "")
+	if err != nil {
+		return err
+	}
+	diagModel, err := prompt(r, "诊断模型（回车=用主模型）", "")
+	if err != nil {
+		return err
+	}
 	host, err := prompt(r, "目标主机 (ssh host)", "")
 	if err != nil {
 		return err
@@ -55,7 +63,7 @@ func Setup() error {
 		return fmt.Errorf("空 key，已取消")
 	}
 
-	fmt.Print("\n" + setupSummary(host, user, provider, modelName, baseURL))
+	fmt.Print("\n" + setupSummary(host, user, provider, modelName, baseURL, services, diagModel))
 	confirm, err := prompt(r, "确认部署? [Y/n]", "Y")
 	if err != nil {
 		return err
@@ -65,11 +73,13 @@ func Setup() error {
 	}
 
 	if err := Enroll(host, EnrollOptions{
-		User:     user,
-		Provider: provider,
-		Model:    modelName,
-		BaseURL:  baseURL,
-		APIKey:   apiKey,
+		User:      user,
+		Provider:  provider,
+		Model:     modelName,
+		BaseURL:   baseURL,
+		APIKey:    apiKey,
+		Services:  services,
+		DiagModel: diagModel,
 	}); err != nil {
 		return err
 	}
@@ -222,7 +232,7 @@ func isYes(s string) bool {
 }
 
 // setupSummary renders the deployment plan for confirmation.
-func setupSummary(host, user, provider, model, baseURL string) string {
+func setupSummary(host, user, provider, model, baseURL, services, diagModel string) string {
 	var b strings.Builder
 	b.WriteString("即将部署：\n")
 	fmt.Fprintf(&b, "  主机:     %s\n", host)
@@ -231,6 +241,12 @@ func setupSummary(host, user, provider, model, baseURL string) string {
 	fmt.Fprintf(&b, "  模型:     %s\n", model)
 	if baseURL != "" {
 		fmt.Fprintf(&b, "  base URL: %s\n", baseURL)
+	}
+	if services != "" {
+		fmt.Fprintf(&b, "  巡检服务: %s\n", services)
+	}
+	if diagModel != "" {
+		fmt.Fprintf(&b, "  诊断模型: %s\n", diagModel)
 	}
 	return b.String()
 }

@@ -177,6 +177,8 @@ func runEnroll(args []string) error {
 	baseURL := fs.String("base-url", "", "optional API base URL override")
 	user := fs.String("user", "opsagent", "dedicated service user to run the agent as")
 	bin := fs.String("bin", "", "path to the linux agent binary (default: dist/opsagent-linux-<arch>)")
+	services := fs.String("services", "", "comma-separated units patrol watches and may auto-restart")
+	diagModel := fs.String("diag-model", "", "diagnosis model (reuses the main provider/key)")
 	_ = fs.Parse(args)
 
 	rest := fs.Args()
@@ -191,12 +193,14 @@ func runEnroll(args []string) error {
 		return fmt.Errorf("empty API key; nothing to enroll")
 	}
 	return cli.Enroll(rest[0], cli.EnrollOptions{
-		User:     *user,
-		Provider: *provider,
-		Model:    *modelName,
-		BaseURL:  *baseURL,
-		BinPath:  *bin,
-		APIKey:   apiKey,
+		User:      *user,
+		Provider:  *provider,
+		Model:     *modelName,
+		BaseURL:   *baseURL,
+		BinPath:   *bin,
+		APIKey:    apiKey,
+		Services:  *services,
+		DiagModel: *diagModel,
 	})
 }
 

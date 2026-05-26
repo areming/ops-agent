@@ -59,16 +59,21 @@ func TestIsYes(t *testing.T) {
 }
 
 func TestSetupSummary(t *testing.T) {
-	s := setupSummary("web1", "opsagent", "deepseek", "deepseek-chat", "")
+	s := setupSummary("web1", "opsagent", "deepseek", "deepseek-chat", "", "", "")
 	for _, want := range []string{"web1", "opsagent", "deepseek", "deepseek-chat"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary missing %q:\n%s", want, s)
 		}
 	}
-	if strings.Contains(s, "base URL") {
-		t.Errorf("summary should omit empty base URL:\n%s", s)
+	for _, omit := range []string{"base URL", "巡检服务", "诊断模型"} {
+		if strings.Contains(s, omit) {
+			t.Errorf("summary should omit empty %q:\n%s", omit, s)
+		}
 	}
-	if !strings.Contains(setupSummary("h", "u", "openai", "m", "http://x"), "base URL") {
-		t.Error("summary should include a non-empty base URL")
+	full := setupSummary("h", "u", "openai", "m", "http://x", "nginx,sshd", "gpt-4o")
+	for _, want := range []string{"base URL", "巡检服务", "nginx,sshd", "诊断模型", "gpt-4o"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("summary missing %q:\n%s", want, full)
+		}
 	}
 }
