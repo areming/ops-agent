@@ -55,7 +55,7 @@ func TestBuildSystemdUnit(t *testing.T) {
 		"Environment=OPSAGENT_MODEL=deepseek-chat",
 		"Environment=OPSAGENT_PATROL_SERVICES=nginx,sshd",
 		"Environment=OPSAGENT_DIAG_MODEL=deepseek-v4-pro",
-		"ExecStart=/usr/local/bin/opsagent serve --socket /run/opsagent/agent.sock",
+		"ExecStart=/usr/local/bin/ops serve --socket /run/opsagent/agent.sock",
 		"WantedBy=multi-user.target",
 	} {
 		if !strings.Contains(unit, want) {
@@ -86,14 +86,16 @@ func TestBuildSystemdUnitOmitsEmptyOptionals(t *testing.T) {
 
 func TestBuildBootstrap(t *testing.T) {
 	opts := EnrollOptions{User: "opsagent", Provider: "deepseek", Model: "deepseek-chat", APIKey: "sk-secret"}
-	script := buildBootstrap(opts, "/tmp/opsagent-enroll-123")
+	script := buildBootstrap(opts, "BIN_SRC=/tmp/opsagent-enroll-123")
 
 	for _, want := range []string{
 		"set -euo pipefail",
 		"useradd --system",
-		"install -m 0755 /tmp/opsagent-enroll-123 /usr/local/bin/opsagent",
+		"BIN_SRC=/tmp/opsagent-enroll-123",
+		`install -m 0755 "$BIN_SRC" /usr/local/bin/ops`,
+		"ln -sf /usr/local/bin/ops /usr/local/bin/opsagent",
 		"visudo -cf /tmp/opsagent.sudoers",
-		"runuser -u \"$SVC_USER\" -- env OPSAGENT_STATE_DIR=\"$STATE\" /usr/local/bin/opsagent key set api_key",
+		"runuser -u \"$SVC_USER\" -- env OPSAGENT_STATE_DIR=\"$STATE\" /usr/local/bin/ops key set api_key",
 		"usermod -aG \"$SVC_USER\" \"$SUDO_USER\"",
 		"systemctl enable --now opsagent.service",
 	} {
@@ -107,5 +109,38 @@ func TestBuildBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("sk-secret"))) {
 		t.Error("bootstrap missing base64-encoded key")
+	}
+}
+
+func TestBuildBootstrapFetch(t *testing.T) {
+	// A fetch-mode obtain snippet (curl + checksum verify) must be embedded
+	// verbatim and the install must read from $BIN_SRC.
+	obtain := "BIN_SRC=/tmp/ops-dl-$$\ncurl -fsSL https://example/ops-linux-amd64 -o \"$BIN_SRC\"\necho \"abc123  $BIN_SRC\" | sha256sum -c -"
+	script := buildBootstrap(EnrollOptions{User: "opsagent"}, obtain)
+	for _, want := range []string{
+		"curl -fsSL https://example/ops-linux-amd64",
+		"sha256sum -c -",
+		`install -m 0755 "$BIN_SRC" /usr/local/bin/ops`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("fetch bootstrap missing %q", want)
+		}
+	}
+}
+
+func TestLocalBinary(t *testing.T) {
+	// An explicit --bin that does not exist is an error.
+	if _, err := localBinary("/no/such/ops", "amd64"); err == nil {
+		t.Error("localBinary with missing explicit path should error")
+	}
+	// No explicit path and no dist build -> empty (caller fetches a release).
+	// Run from a temp dir so a developer's real dist/ doesn't interfere.
+	t.Chdir(t.TempDir())
+	got, err := localBinary("", "amd64")
+	if err != nil {
+		t.Fatalf("localBinary: %v", err)
+	}
+	if got != "" {
+		t.Errorf("localBinary without dist = %q, want empty", got)
 	}
 }

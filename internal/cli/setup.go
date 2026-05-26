@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/areming/ops-agent/internal/version"
 	"golang.org/x/term"
 )
 
@@ -16,9 +17,28 @@ import (
 // (with fix hints), runs enroll, and verifies the service started. It only
 // drives the existing pieces; no deployment logic lives here.
 func Setup() error {
-	fmt.Print("opsagent setup — 引导部署到一台 Linux 服务器。\n\n")
+	fmt.Print("ops setup — 引导部署到一台 Linux 服务器。\n\n")
 	r := bufio.NewReader(os.Stdin)
+	host, err := prompt(r, "目标主机 (ssh host)", "")
+	if err != nil {
+		return err
+	}
+	if host == "" {
+		return fmt.Errorf("未填主机，已取消")
+	}
+	return setupHost(r, host)
+}
 
+// SetupHost runs the deploy wizard for an already-known host. It is used when
+// `connect <host>` finds the agent is not installed there yet.
+func SetupHost(host string) error {
+	fmt.Printf("引导部署 ops 到 %s。\n\n", host)
+	return setupHost(bufio.NewReader(os.Stdin), host)
+}
+
+// setupHost collects model settings and the API key, checks SSH/sudo, then
+// enrolls the host and verifies the service started.
+func setupHost(r *bufio.Reader, host string) error {
 	provider, err := promptProvider(r)
 	if err != nil {
 		return err
@@ -42,13 +62,6 @@ func Setup() error {
 	diagModel, err := prompt(r, "诊断模型（回车=用主模型）", "")
 	if err != nil {
 		return err
-	}
-	host, err := prompt(r, "目标主机 (ssh host)", "")
-	if err != nil {
-		return err
-	}
-	if host == "" {
-		return fmt.Errorf("未填主机，已取消")
 	}
 
 	if err := preflightWithRetry(r, host); err != nil {
@@ -80,6 +93,7 @@ func Setup() error {
 		APIKey:    apiKey,
 		Services:  services,
 		DiagModel: diagModel,
+		Version:   version.Value,
 	}); err != nil {
 		return err
 	}
@@ -91,7 +105,7 @@ func Setup() error {
 		fmt.Println("  ✓ opsagent 服务运行中")
 	}
 
-	fmt.Printf("\n✓ 完成。开始对话：\n    opsagent connect %s\n", host)
+	fmt.Printf("\n✓ 完成。开始对话：\n    ops connect %s\n", host)
 	fmt.Println("  （若 connect 被拒，重新登录一次 SSH 让 opsagent 组生效）")
 	return nil
 }

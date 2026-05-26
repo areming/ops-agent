@@ -16,7 +16,11 @@ const AgentSocketPath = "/run/opsagent/agent.sock"
 // Install paths on the managed host. enroll lays these out; the systemd
 // unit and config defaults agree with them.
 const (
-	installBinPath = "/usr/local/bin/opsagent"
+	installBinPath = "/usr/local/bin/ops"
+	// legacyBinPath is a symlink to installBinPath so anything still invoking
+	// the old `opsagent` name (e.g. a not-yet-upgraded local client) keeps
+	// working after the rename.
+	legacyBinPath  = "/usr/local/bin/opsagent"
 	stateDir       = "/var/lib/opsagent"
 	runtimeDirName = "opsagent" // systemd RuntimeDirectory -> /run/opsagent
 	sudoersPath    = "/etc/sudoers.d/opsagent"
@@ -30,10 +34,11 @@ type EnrollOptions struct {
 	Provider  string
 	Model     string
 	BaseURL   string
-	BinPath   string // local linux binary; empty -> dist/opsagent-linux-<arch>
+	BinPath   string // local linux binary; empty -> dist/ops-linux-<arch>, else fetch release
 	APIKey    string
 	Services  string // comma-separated units patrol watches and may auto-restart
 	DiagModel string // optional diagnosis model (reuses the main provider/key)
+	Version   string // build version; used to fetch a release when no local binary exists
 }
 
 // Enroll deploys the agent to host over SSH: detect the architecture, copy
@@ -48,18 +53,13 @@ func Enroll(host string, opts EnrollOptions) error {
 	if err != nil {
 		return err
 	}
-	binPath, err := resolveBinary(opts.BinPath, arch)
+
+	obtain, err := obtainStep(host, arch, opts)
 	if err != nil {
 		return err
 	}
 
-	remoteTmp := fmt.Sprintf("/tmp/opsagent-enroll-%d", time.Now().UnixNano())
-	fmt.Fprintf(os.Stderr, "→ copying %s to %s:%s\n", binPath, host, remoteTmp)
-	if err := run("scp", binPath, host+":"+remoteTmp); err != nil {
-		return fmt.Errorf("copy binary: %w", err)
-	}
-
-	script := buildBootstrap(opts, remoteTmp)
+	script := buildBootstrap(opts, obtain)
 	fmt.Fprintf(os.Stderr, "→ running bootstrap on %s (sudo)\n", host)
 	cmd := exec.Command("ssh", host, "sudo", "-n", "bash", "-s")
 	cmd.Stdin = strings.NewReader(script)
@@ -69,7 +69,7 @@ func Enroll(host string, opts EnrollOptions) error {
 		return fmt.Errorf("bootstrap failed (ensure the SSH user has passwordless sudo or is root): %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "✓ enrolled. run: opsagent connect %s\n", host)
+	fmt.Fprintf(os.Stderr, "✓ enrolled. run: ops connect %s\n", host)
 	fmt.Fprintln(os.Stderr, "  (if connect is denied, re-login so your new opsagent group membership applies)")
 	return nil
 }
@@ -95,17 +95,55 @@ func archFromUname(uname string) (string, error) {
 	}
 }
 
-// resolveBinary returns the explicit binary path or the build.ps1 output for
-// the target architecture, erroring if it is missing.
-func resolveBinary(explicit, arch string) (string, error) {
-	path := explicit
-	if path == "" {
-		path = fmt.Sprintf("dist/opsagent-linux-%s", arch)
+// obtainStep returns the shell snippet that places the agent binary at
+// $BIN_SRC on the host. It prefers a local binary (explicit --bin or a
+// dist/ build) and scp's it — which works offline; otherwise it has the host
+// fetch the matching release over HTTPS and verify it against the checksum
+// this side fetched, so a tampered binary is rejected before it runs as root.
+func obtainStep(host, arch string, opts EnrollOptions) (string, error) {
+	local, err := localBinary(opts.BinPath, arch)
+	if err != nil {
+		return "", err
 	}
-	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("agent binary %q not found (run build.ps1, or pass --bin): %w", path, err)
+	if local != "" {
+		remoteTmp := fmt.Sprintf("/tmp/opsagent-enroll-%d", time.Now().UnixNano())
+		fmt.Fprintf(os.Stderr, "→ copying %s to %s:%s\n", local, host, remoteTmp)
+		if err := run("scp", local, host+":"+remoteTmp); err != nil {
+			return "", fmt.Errorf("copy binary: %w", err)
+		}
+		return "BIN_SRC=" + remoteTmp, nil
 	}
-	return path, nil
+
+	if opts.Version == "" || opts.Version == "dev" {
+		return "", fmt.Errorf("no local binary dist/ops-linux-%s and this is an unversioned build, "+
+			"so it can't fetch a release; run ./build.ps1 first, or use a released ops", arch)
+	}
+	sum, err := fetchChecksum(opts.Version, arch)
+	if err != nil {
+		return "", fmt.Errorf("fetch release checksum for %s: %w", opts.Version, err)
+	}
+	url := releaseBinURL(opts.Version, arch)
+	fmt.Fprintf(os.Stderr, "→ %s will fetch %s and verify sha256\n", host, url)
+	return fmt.Sprintf("BIN_SRC=/tmp/ops-dl-$$\n"+
+		"curl -fsSL %s -o \"$BIN_SRC\"\n"+
+		"echo \"%s  $BIN_SRC\" | sha256sum -c -", url, sum), nil
+}
+
+// localBinary returns the local linux binary to scp, or "" if none exists (so
+// enroll should fetch a release). An explicit --bin that is missing is an
+// error.
+func localBinary(explicit, arch string) (string, error) {
+	if explicit != "" {
+		if _, err := os.Stat(explicit); err != nil {
+			return "", fmt.Errorf("agent binary %q not found: %w", explicit, err)
+		}
+		return explicit, nil
+	}
+	path := fmt.Sprintf("dist/ops-linux-%s", arch)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	return "", nil
 }
 
 // buildSudoers returns the NOPASSWD whitelist: service management only.
@@ -153,10 +191,11 @@ WantedBy=multi-user.target
 `, opts.User, opts.User, runtimeDirName, env.String(), installBinPath, AgentSocketPath)
 }
 
-// buildBootstrap returns the idempotent root script run over SSH. The API
-// key is base64-encoded so it carries no shell metacharacters and is piped
-// straight into `key set` (never written to a file).
-func buildBootstrap(opts EnrollOptions, remoteBin string) string {
+// buildBootstrap returns the idempotent root script run over SSH. obtain is a
+// snippet that leaves the agent binary at $BIN_SRC (an scp'd temp path, or a
+// curl+verify). The API key is base64-encoded so it carries no shell
+// metacharacters and is piped straight into `key set` (never written to a file).
+func buildBootstrap(opts EnrollOptions, obtain string) string {
 	keyB64 := base64.StdEncoding.EncodeToString([]byte(opts.APIKey))
 	return fmt.Sprintf(`set -euo pipefail
 SVC_USER=%[1]s
@@ -164,8 +203,10 @@ STATE=%[2]s
 
 id -u "$SVC_USER" >/dev/null 2>&1 || useradd --system --home-dir "$STATE" --shell /usr/sbin/nologin "$SVC_USER"
 
-install -m 0755 %[3]s %[4]s
-rm -f %[3]s
+%[3]s
+install -m 0755 "$BIN_SRC" %[4]s
+ln -sf %[4]s %[10]s
+rm -f "$BIN_SRC"
 
 mkdir -p "$STATE/knowledge"
 chown -R "$SVC_USER:$SVC_USER" "$STATE"
@@ -191,13 +232,14 @@ echo "opsagent service started"
 `,
 		opts.User,               // 1
 		stateDir,                // 2
-		remoteBin,               // 3
+		obtain,                  // 3
 		installBinPath,          // 4
 		buildSudoers(opts.User), // 5
 		sudoersPath,             // 6
 		unitPath,                // 7
 		buildSystemdUnit(opts),  // 8
 		keyB64,                  // 9
+		legacyBinPath,           // 10
 	)
 }
 
