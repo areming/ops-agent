@@ -43,6 +43,12 @@ The agent runs as a dedicated `opsagent` user; privilege escalation goes through
 
 Cross-compiles to `./dist/opsagent-{linux-amd64,linux-arm64,windows-amd64}`, each a single static binary (`file dist/opsagent-linux-amd64` shows `statically linked`).
 
+On Windows, an optional one-step local install (puts `opsagent` on PATH + enables ssh-agent, so you can just type `opsagent`):
+
+```powershell
+./install.ps1
+```
+
 ## Deploy
 
 **Easiest — guided wizard** (recommended for first use):
@@ -51,7 +57,7 @@ Cross-compiles to `./dist/opsagent-{linux-amd64,linux-arm64,windows-amd64}`, eac
 opsagent setup
 ```
 
-It walks you through provider / model / target host, **checks SSH and passwordless sudo** (with fix hints if either fails), then deploys and verifies the service is up. You only answer questions — no flags to remember.
+It walks you through provider / model / target host (and optionally which services patrol should watch and auto-restart, and a diagnosis model), **checks SSH and passwordless sudo** (with fix hints if either fails), then deploys and verifies the service is up. You only answer questions — no flags to remember.
 
 Or deploy manually in one command:
 
@@ -59,6 +65,8 @@ Or deploy manually in one command:
 # the API key is read from stdin, so it never lands in shell history / the process list
 echo "$DEEPSEEK_KEY" | opsagent enroll web1 --provider deepseek --model deepseek-chat
 ```
+
+Optional flags: `--services nginx,sshd` (units patrol watches and auto-restarts), `--diag-model <model>` (diagnosis model, reusing the main provider/key), `--user`, `--base-url`, `--bin`.
 
 Over SSH, `enroll` detects the target architecture → scp's the matching binary → runs an idempotent privileged bootstrap that:
 
@@ -75,7 +83,8 @@ Main `enroll` flags: `--provider` (default `deepseek`), `--model`, `--base-url`,
 ## Usage
 
 ```bash
-opsagent connect <host>                          # open a conversation (SSH)
+opsagent connect <host>                          # open a conversation from your laptop (SSH)
+opsagent connect --local /run/opsagent/agent.sock # on the server itself (no SSH; user must be in the opsagent group)
 opsagent run -c "<instruction>" <host>... [--yes] # fan-out: one instruction across hosts
 opsagent logs [-n N]                             # audit trail (with source: chat/patrol)
 opsagent todos                                   # patrol / self-heal todos

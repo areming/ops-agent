@@ -21,6 +21,7 @@
 
 ```powershell
 ./build.ps1        # 交叉编译到 ./dist/opsagent-{linux-amd64,linux-arm64,windows-amd64}
+./install.ps1      # 可选：把 opsagent 放进 PATH + 启用 ssh-agent（Windows 本地安装）
 ```
 
 每个产物都是单静态二进制（`file dist/opsagent-linux-amd64` 应显示 `statically linked`）。
@@ -46,8 +47,8 @@ internal/
 ```
 opsagent setup                              引导式向导：问答 + 自动前置检查 + 部署（推荐首次用）
 opsagent enroll <host> [flags]              一条命令部署到 Linux 机（API key 从 stdin 读）
-opsagent connect <host>                     开一段对话（SSH）
-opsagent connect --local <socket>           本地直连（开发）
+opsagent connect <host>                     从本地开一段对话（SSH）
+opsagent connect --local <socket>           直连本地 socket（开发，或在服务器上：--local /run/opsagent/agent.sock）
 opsagent run -c "<指令>" <host>... [--yes]  批量：一条指令并发跑多台（见 §6）
 opsagent serve [--socket PATH]              常驻 daemon
 opsagent key set <name>                     存密钥（值从 stdin 读，不进 shell history）

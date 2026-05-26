@@ -74,7 +74,7 @@ M5 已做（巡检 + 自愈）：
 - [x] `opsagent enroll <host>`：scp 二进制、建系统用户、生成 sudoers 白名单（仅 systemctl/journalctl）、装 systemd unit、初始化目录、provision key+provider
 - [x] `opsagent todos` / `logs` 查看入口（只读打开本地 DB）
 - [x] 离线验收：enroll 生成物单测（arch/sudoers/unit/bootstrap）、logs/todos 读 DB、交叉编译静态二进制、vet/gofmt 干净
-- [ ] live 验收：干净 Linux 机一条命令部署、`connect` 即用、专用用户运行、提权走 sudo 白名单（需你那台机，首次跑通 SSH 路径）
+- [x] live 验收（2026-05-26）：经 gw 跳板部署到 vps 成功，agent 以 opsagent 用户运行、sudoers 白名单就位、`setup` 向导一键跑通、connect 可用。SSH 路径（ProxyJump）首次跑通
 - [x] git commit + push M4（`c0b521b`+`e64a69a`）
 
 ### M5 — 巡检 + 自愈　🟡（代码+离线验收过，待 live 验收+提交）
@@ -90,6 +90,7 @@ M5 已做（巡检 + 自愈）：
 - [x] 多模型场景化（B）：`OPSAGENT_DIAG_*` 诊断模型（未配回退主模型）；抽 `engine`+`interaction` 把 model↔tool 循环从 conn 解耦（chat=connInteraction 行为不变，loop approve/deny 测试无回归）；patrol 对无自动修复的 finding（disk/load）跑无连接诊断 turn，模型只读诊断/写操作→todo（附分析）；`OpenTodoExists` 去重（顺带修 M5「满盘每 tick 刷 todo」隐患）
 - [x] 批量任务 fan-out（C）：`opsagent run -c "<指令>" <host>... [--yes]`，抽 `sshBridge` 复用、有界并发（5）、非交互 drain；默认拒绝需确认的写操作并标「需人工」，`--yes` 显式全批准；成组打印 + 汇总
 - [x] 引导式部署向导（D）：`opsagent setup` 交互问答（provider/模型/host）→ 自动前置检查（ssh + `sudo -n`，失败给 visudo 修复提示并可重试）→ 复用 `cli.Enroll` 部署 → `systemctl is-active` 验证。隐藏 key 输入引 `golang.org/x/term`（第 3 个依赖，已批准）。纯函数 `normalizeProvider/defaultModel/isYes/setupSummary` 有单测
+- [x] 易用性增强（E，用户反馈后）：① connect/run 提示符带 host 名（`[vps] >`）；② 向导/enroll 顺手 provision `OPSAGENT_PATROL_SERVICES`（`--services`）+ `OPSAGENT_DIAG_MODEL`（`--diag-model`，复用主 provider/key），写进 systemd unit；③ `install.ps1` Windows 本地一键安装（拷 exe 进 PATH + 启用 ssh-agent）。enroll_test 覆盖新 env 行。已 live 跑通（vps 经 gw 跳板部署成功）
 - [x] 离线验收（A/B/C）：全测试/vet/gofmt 干净（新增 buildChecks、诊断记 todo+skipped、dedup 守卫、fanout decline/approve/失败汇总测试）；交叉编译 amd64/arm64 静态二进制
 - [ ] git commit + push M6（A/B/C）
 - [ ] live 验收：fan-out 多台跑通；DIAG 模型对真实 disk/load 异常给出有用诊断 todo（需 DeepSeek key + 多机）
