@@ -51,6 +51,29 @@ On Windows, an optional one-step local install (puts `opsagent` on PATH + enable
 
 ## Deploy
 
+### Prerequisite: SSH setup
+
+opsagent drives the target through your local `ssh`/`scp`, so before deploying make sure:
+
+1. **`ssh <host>` works without a password** (key auth). If your private key has a passphrase, load it into ssh-agent so you aren't prompted repeatedly:
+   - Windows: `./install.ps1` (enables ssh-agent), then `ssh-add $env:USERPROFILE\.ssh\id_ed25519`.
+   - macOS/Linux: `ssh-add ~/.ssh/id_ed25519`.
+2. **Target behind a jump host** (a private box reachable only through a public one): use ProxyJump in `~/.ssh/config`, then use the alias for enroll/connect:
+   ```sshconfig
+   Host gw
+       HostName <jump-host public IP>
+       User <jump-host user>
+   Host vps
+       HostName <private IP>
+       User <target user>
+       ProxyJump gw
+   ```
+   Verify: `ssh vps "echo ok"` should return without a password.
+3. **The target's SSH user can sudo without a password** (enroll uses `sudo -n`): if not, on the target run `sudo visudo` and add `<user> ALL=(ALL) NOPASSWD:ALL` (you can narrow it later).
+4. **The target has outbound HTTPS** to the model API (the agent calls it at runtime).
+
+### Deploy
+
 **Easiest — guided wizard** (recommended for first use):
 
 ```bash

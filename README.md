@@ -51,6 +51,29 @@ Windows 上可选一键本地安装（把 `opsagent` 放进 PATH + 启用 ssh-ag
 
 ## 部署
 
+### 前置：SSH 准备
+
+opsagent 用你本地的 `ssh`/`scp` 操作目标机，所以部署前先确保：
+
+1. **能免密 `ssh <host>`**（密钥认证）。私钥带 passphrase 的，先加载进 ssh-agent 避免反复输密码：
+   - Windows：`./install.ps1`（会启用 ssh-agent），再 `ssh-add $env:USERPROFILE\.ssh\id_ed25519`。
+   - macOS/Linux：`ssh-add ~/.ssh/id_ed25519`。
+2. **目标机在跳板机后面**（内网机只能经一台外网机到达）：用 ProxyJump 在 `~/.ssh/config` 配好别名，之后 enroll/connect 直接用别名：
+   ```sshconfig
+   Host gw
+       HostName <跳板机外网IP>
+       User <跳板机用户>
+   Host vps
+       HostName <内网IP>
+       User <内网机用户>
+       ProxyJump gw
+   ```
+   验证：`ssh vps "echo ok"` 应免密直接返回。
+3. **目标机的 SSH 用户能免密 sudo**（enroll 用 `sudo -n`）：不行就在目标机 `sudo visudo` 加 `<用户> ALL=(ALL) NOPASSWD:ALL`（验收后可收窄）。
+4. **目标机能出站 HTTPS** 到模型 API（agent 运行时要调它）。
+
+### 部署
+
 **最简方式——引导式向导**（推荐首次使用）：
 
 ```bash

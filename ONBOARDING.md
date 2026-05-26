@@ -17,6 +17,8 @@
 - **运行身份**：部署后以专用用户 `opsagent` 跑，提权走自动生成的 sudo 白名单（仅 `systemctl`/`journalctl`）。
 - **部署约束**：服务器是老 Ubuntu、CPU 可能很旧 → 坚持 `CGO_ENABLED=0` 纯 Go 静态二进制、不引需 CGO 或现代指令集的依赖。
 
+**部署前置（SSH）**：opsagent 用本地 `ssh`/`scp` 操作目标机，部署前要 ① 能免密 `ssh <host>`（带 passphrase 的私钥先 `ssh-add` 进 ssh-agent；Windows 跑 `install.ps1` 启用 agent）；② 内网机经跳板机时在 `~/.ssh/config` 配 `ProxyJump`，用别名做 host；③ 目标机 SSH 用户能免密 sudo（enroll 用 `sudo -n`）；④ 目标机能出站 HTTPS 到模型 API。完整步骤见 README「前置：SSH 准备」。
+
 ## 2. 构建
 
 ```powershell
