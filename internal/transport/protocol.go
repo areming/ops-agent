@@ -18,7 +18,27 @@ const (
 	TypeToolStart      FrameType = "tool_start"      // agent->cli, display only
 	TypeConfirmRequest FrameType = "confirm_request" // agent->cli
 	TypeConfirmReply   FrameType = "confirm_reply"   // cli->agent
+
+	// M7: in-conversation slash commands. The CLI sends a control request
+	// instead of user text; the agent answers with a single control reply
+	// (no Done frame). Used for /models, /logs, /clear.
+	TypeControlRequest FrameType = "control_request" // cli->agent
+	TypeControlReply   FrameType = "control_reply"   // agent->cli
 )
+
+// ControlRequestPayload carries a slash command and its optional argument
+// (e.g. Cmd="models", Arg="deepseek-chat").
+type ControlRequestPayload struct {
+	Cmd string `json:"cmd"`
+	Arg string `json:"arg,omitempty"`
+}
+
+// ControlReplyPayload is the agent's answer to a control request. Text is
+// shown to the user; a non-empty Err reports the command failed.
+type ControlReplyPayload struct {
+	Text string `json:"text,omitempty"`
+	Err  string `json:"err,omitempty"`
+}
 
 // ToolStartPayload notifies the client that a tool is about to run, for
 // display only.
