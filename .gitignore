@@ -8,3 +8,6 @@
 
 # unix sockets / local runtime artifacts
 *.sock
+
+# local-only known-issues log (not published)
+/BUGS.md
