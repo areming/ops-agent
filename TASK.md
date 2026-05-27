@@ -2,13 +2,13 @@
 
 > 唯一执行事实来源。设计见 REQUIREMENTS / TECH_STACK / ARCHITECTURE / ROADMAP（这些只讲设计，不记执行状态）。
 > 图例：✅ 完成并验证 ｜ 🟡 代码完成待验证/待提交 ｜ ⬜ 未开始
-> 最后更新：2026-05-26
+> 最后更新：2026-05-27
 
 ---
 
 ## 下次会话从哪开始
 
-**进行中：M7 — ops 易用性重构。** 5 步①②③④⑤代码+离线验收全部完成、整体待提交（决策见决策日志 2026-05-26）。`go build/vet/test ./...` 全绿、gofmt 干净、CGO=0 交叉编译 amd64/arm64 通过。下一步：分步 git commit + push，然后 live 验收（4 项见 M7 收尾）。其中 connect 自举安装需先打 tag 触发 release workflow 出包才能 live 验。
+**M7 代码已全部提交**（`05c4699`→`32dbb57`）。新增 Linux 一键安装脚本（`install.sh`）和 README 安装章节。下一步：push M7 + live 验收（4 项见 M7 收尾）。其中 connect 自举安装需先打 tag 触发 release workflow 出包才能 live 验。
 
 ---
 
@@ -101,18 +101,27 @@ M5 已做（巡检 + 自愈）：
 - [ ] TUI 升级到 bubbletea　⚠️依赖待决：bubbletea/lipgloss（未做）
 - [ ] 配置从环境变量升级到 TOML 文件　⚠️依赖待决：TOML 库（未做）
 
-### M7 — ops 易用性重构（用户反馈驱动）　🟡
-目标：默认零配置、用户只敲 `ops`、对话内 `/命令` 对齐 claude、本地与 SSH 远程共用一套对话代码。一步一 commit，依赖序 ①→⑤（⑤功能独立可插队）。决策全锁定见决策日志 2026-05-26。
-**下方②③④⑤为待执行详细计划，待用户确认后执行。**
+### M7 — ops 易用性重构（用户反馈驱动）　🟡（代码全部已提交，待 live 验收）
+目标：默认零配置、用户只敲 `ops`、对话内 `/命令` 对齐 claude、本地与 SSH 远程共用一套对话代码。决策全锁定见决策日志 2026-05-26。
 
-#### ① 配置落盘（基石）　🟡 待提交
+实际提交路径（各步内容分布在下列 commit，与计划拆法有出入但内容全覆盖）：
+- `05c4699` feat(config): persist model selection to config.json → ①
+- `dc31450` feat(transport): add control request/reply frames → ③
+- `e8ad7e7` feat(model): add KnownModels for the /models command → ③
+- `733d4cc` chore(version): add build version package → ⑤
+- `aa77c23` feat(agent): in-process local session and slash-command control → ② ③
+- `e54de68` feat(cli): local onboarding, slash commands, and connect self-install → ② ③ ⑤
+- `6105e79` feat(cli): rename the user-facing command to ops → ④
+- `32dbb57` docs(task): record M7 ops usability rework plan and progress
+
+#### ① 配置落盘（基石）　✅ 已提交（`05c4699`）
 - [x] `config.go`：`Load()` 优先级 env > `config.json`(StateDir 下) > 默认；`fileConfig` 只含模型选择字段（provider/model/base_url + diag 三件）
 - [x] `config.Save(cfg)`：原子写（temp+rename）、0600，不写 API key/派生路径；损坏文件静默回退 env/默认（注释说明）
 - [x] `config_test.go`：缺文件用默认、读文件、env 覆盖文件、Save 往返且文件不含 key
 - [x] 离线验收：gofmt/vet/`go test ./...` 全绿无回归
-- [ ] git commit
+- [x] git commit（`05c4699`）
 
-#### ② `ops`（无参）本地进程内对话 + 未配置引导　🟡 待提交
+#### ② `ops`（无参）本地进程内对话 + 未配置引导　✅ 已提交（`aa77c23` + `e54de68`）
 - [x] `agent/daemon.go` 抽 `newServer(cfg) (*server, error)` + `(*server).Close()`；`Serve` 改为调它（diagProv 仅 patrol 启用时建）；`server` 加 `cfg` 字段供③用
 - [x] `agent/daemon.go` 加 `LocalSession(nc net.Conn) error`：`newServer`→`srv.handle(nc)`→关 store；本地交互**不起 patrol**
 - [x] `cli/onboard.go`(新) `onboardLocal()`：复用 setup 的 prompt 系列→收 provider/model/base_url/key→`persistLocalConfig`（keystore 存 `api_key` + `config.Save`，抽出供测试）
@@ -121,9 +130,9 @@ M5 已做（巡检 + 自愈）：
 - [x] 测试 `cli/local_test.go`：`configured()` 真值表（无 model/有 model 无 key/env key/落盘后）+ 不过早创建 master.key + `persistLocalConfig` 往返
 - [x] 离线验收：`go build/vet/test ./...` 全绿、gofmt 干净、无回归
 - 注：`LocalSession` 全链路需真模型+终端，未单测；其 engine/handle 路径已由 `loop_test.go`(net.Pipe) 覆盖，`RunLocal` 仅薄 glue
-- [ ] git commit
+- [x] git commit（`aa77c23` + `e54de68`）
 
-#### ③ 对话内 `/命令`（控制帧，本地远程统一）　🟡 待提交
+#### ③ 对话内 `/命令`（控制帧，本地远程统一）　✅ 已提交（`dc31450` + `e8ad7e7` + `aa77c23` + `e54de68`）
 - [x] `transport/protocol.go`：加 `TypeControlRequest`/`TypeControlReply` + `ControlRequestPayload{Cmd,Arg}` / `ControlReplyPayload{Text,Err}`
 - [x] `model/registry.go`：`KnownModels(provider) []string`（openai/deepseek/anthropic 常见清单，未知 nil）
 - [x] `agent/daemon.go`：`server` 加 `sync.Mutex` 守 `cfg`/`prov`，加 `provider()` 加锁读、`chatTurn` 改用之；`handle()` 改 switch 加 `TypeControlRequest`→`handleControl`：
@@ -133,9 +142,9 @@ M5 已做（巡检 + 自愈）：
 - [x] `cli/client.go` `repl()`：行首 `/` 拦截——`/help`(`?`) `/quit`(`exit`/`q`) 本地；`/models`/`/logs`/`/clear` 走 `sendControl`（写请求帧+读单条 `ControlReply` 打印，无 Done）；banner 提示 `/help`
 - [x] 测试：`model.KnownModels`；`agent` 的 `controlModels` 列表+切换持久化、`controlLogs`(空/有记录)、`handleControl("clear")` net.Pipe 往返且 sess 清空
 - [x] 离线验收：`go build/vet/test ./...` 全绿、gofmt 干净（`-race` 因 CGO 关不可用，锁靠设计保证）
-- [ ] git commit
+- [x] git commit（`dc31450` + `e8ad7e7` + `aa77c23` + `e54de68`）
 
-#### ④ 门面改名 → `ops`（仅用户可见层）　🟡 待提交
+#### ④ 门面改名 → `ops`（仅用户可见层）　✅ 已提交（`6105e79`）
 - [x] `git mv cmd/opsagent cmd/ops`；包注释、`usage()`、错误前缀、`connect/run` 默认 `--bin` 全改 `ops`
 - [x] `cli/enroll.go`：`installBinPath`→`/usr/local/bin/ops`；新增 `legacyBinPath` + bootstrap `ln -sf` 建 `opsagent`→`ops` 软链；`resolveBinary` 默认 `dist/ops-linux-<arch>`；成功提示 `ops connect`
 - [x] `client.go`(banner+_bridge 注释)、`daemon.go`(`ops key set` 提示)、`bridge.go`(注释)、`setup.go`(`ops setup`/`ops connect`)
@@ -144,9 +153,9 @@ M5 已做（巡检 + 自愈）：
 - [x] README.md/README.en.md：命令示例改 `ops` + 补 `ops` 无参与 `/命令` 说明（设计文档的 daemon/项目名叙述保留 `opsagent`）
 - [x] **未动**（核对）：单元 `opsagent.service`、用户/组 `opsagent`、`/var/lib/opsagent`、`/run/opsagent`、`OPSAGENT_*`、persona prompt
 - [x] 离线验收：`go build/vet/test ./...` 全绿、gofmt 干净；grep 审计残留 `opsagent` 仅 infra
-- [ ] git commit
+- [x] git commit（`6105e79`）
 
-#### ⑤ 自举安装（release 包，仅「没装就装」）　🟡 待提交
+#### ⑤ 自举安装（release 包，仅「没装就装」）　✅ 已提交（`733d4cc` + `e54de68` + `6105e79`）
 - [x] `internal/version`(新)：`Value`(默认 "dev")，`-ldflags -X .../version.Value=<tag>` 刻入
 - [x] `cmd/ops/main.go`：`ops version`/`-v`/`--version`；enroll 传 `Version: version.Value`
 - [x] `.github/workflows/release.yml`(新)：tag `v*` 触发，`CGO_ENABLED=0` 交叉编译 `ops-linux-{amd64,arm64}` + `sha256sum > SHA256SUMS`，`gh release create` 上传
@@ -158,10 +167,11 @@ M5 已做（巡检 + 自愈）：
 - [x] 测试：`release_test`(URL 拼装、`parseChecksum` 命中/缺失)、`enroll_test`(fetch-mode bootstrap、`localBinary` 显式缺失报错/无 dist 返回空，`t.Chdir` 隔离)
 - [x] 离线验收：`go build/vet/test ./...` 全绿、gofmt 干净；`CGO_ENABLED=0` 交叉编译 linux amd64+arm64 通过；`ops version` 刻入值正确
 - 注：connect 自举全链路（真 SSH+真 release）需 live 验收，离线只覆盖各纯函数+脚本生成
-- [ ] git commit
+- [x] git commit（`733d4cc` + `e54de68` + `6105e79`）
 
 #### 收尾
-- [ ] git commit + push M7（分步提交，每步一 commit）
+- [x] git commit（各步已提交，见上方 commit 列表）
+- [ ] push M7
 - [ ] live 验收：①干净机 `ops`→引导→对话；②会话内 `/models` 切换重启仍生效、`/logs`、`/clear`；③干净机 `ops connect <host>`→确认→拉 release 装→进对话（需先打 tag 出 release）；④老机重 enroll 后 `opsagent` 软链可用
 
 ### 跨里程碑待办
