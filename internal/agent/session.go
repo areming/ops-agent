@@ -44,8 +44,36 @@ func (s *session) hydrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.msgs = msgs
+	s.msgs = sanitizeHistory(msgs)
 	return nil
+}
+
+// sanitizeHistory trims a recalled message window into a valid tool-call
+// transcript, which the model API requires: every assistant tool_call must be
+// followed by matching tool results. A raw window can violate this two ways —
+// the rolling LIMIT can start mid-exchange, orphaning leading tool results
+// whose assistant call was cut out; and an interrupted turn can persist an
+// assistant call whose tool results were never written, leaving it dangling
+// at the tail. Both make the next request 400, so drop them here.
+func sanitizeHistory(msgs []model.Message) []model.Message {
+	// Drop leading tool results with no introducing assistant call in window.
+	start := 0
+	for start < len(msgs) && msgs[start].Role == model.RoleTool {
+		start++
+	}
+	msgs = msgs[start:]
+
+	// Drop any trailing assistant message whose tool_calls were never
+	// answered (the answers would follow it, but it is last).
+	for len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		if last.Role == model.RoleAssistant && len(last.ToolCalls) > 0 {
+			msgs = msgs[:len(msgs)-1]
+			continue
+		}
+		break
+	}
+	return msgs
 }
 
 func (s *session) addUser(ctx context.Context, text string) {
