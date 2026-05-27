@@ -1,0 +1,63 @@
+package cli
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestReleaseBinAsset(t *testing.T) {
+	cases := []struct{ goos, arch, want string }{
+		{"linux", "amd64", "ops-linux-amd64"},
+		{"linux", "arm64", "ops-linux-arm64"},
+		{"windows", "amd64", "ops-windows-amd64.exe"},
+		{"darwin", "arm64", "ops-darwin-arm64"},
+	}
+	for _, tc := range cases {
+		if got := releaseBinAsset(tc.goos, tc.arch); got != tc.want {
+			t.Errorf("releaseBinAsset(%q,%q) = %q, want %q", tc.goos, tc.arch, got, tc.want)
+		}
+	}
+}
+
+func TestVerifyFile(t *testing.T) {
+	content := []byte("hello ops update")
+	sum := sha256.Sum256(content)
+	want := hex.EncodeToString(sum[:])
+
+	f, err := os.CreateTemp(t.TempDir(), "ops-verify-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(content)
+	f.Close()
+
+	if err := verifyFile(f.Name(), want); err != nil {
+		t.Fatalf("verifyFile with correct hash: %v", err)
+	}
+	if err := verifyFile(f.Name(), "deadbeef"); err == nil {
+		t.Fatal("expected mismatch error for wrong hash")
+	}
+}
+
+func TestCopyReplace(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+
+	if err := os.WriteFile(src, []byte("binary content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyReplace(src, dst); err != nil {
+		t.Fatalf("copyReplace: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "binary content" {
+		t.Fatalf("unexpected content: %q", got)
+	}
+}
