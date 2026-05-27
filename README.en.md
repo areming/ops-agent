@@ -35,18 +35,48 @@ The agent runs as a dedicated `opsagent` user; privilege escalation goes through
 - **Deploy prerequisite**: SSH access to the target, and the SSH user can run sudo non-interactively (NOPASSWD) or is root (`enroll` uses `sudo -n`, so a password requirement fails fast and clearly).
 - **Model**: one model API key (DeepSeek / OpenAI-compatible / Anthropic).
 
-## Build
+## Install
+
+Install `ops` on **your own machine** (the one you use to manage remote servers).
+
+### Linux (amd64 / arm64)
+
+One command: downloads the latest release, verifies sha256, installs to `/usr/local/bin/ops`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/areming/ops-agent/main/install.sh | sudo sh
+```
+
+Pin a specific version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/areming/ops-agent/main/install.sh | sudo OPS_VERSION=v0.0.1 sh
+```
+
+After installation, run `ops`. On first run it guides you through choosing a model provider and entering your API key, then drops you into a conversation.
+
+### Windows
+
+Build from source first, then run the one-step installer (adds `ops` to PATH + enables ssh-agent):
 
 ```powershell
 ./build.ps1
+./install.ps1
 ```
 
-Cross-compiles to `./dist/ops-{linux-amd64,linux-arm64,windows-amd64}`, each a single static binary (`file dist/ops-linux-amd64` shows `statically linked`).
-
-On Windows, an optional one-step local install (puts `ops` on PATH + enables ssh-agent, so you can just type `ops`):
+Open a new terminal, load your SSH private key, and you're ready:
 
 ```powershell
-./install.ps1
+ssh-add $env:USERPROFILE\.ssh\id_ed25519
+ops
+```
+
+## Build (from source)
+
+Requires Go 1.25+. Cross-compiles to `./dist/ops-{linux-amd64,linux-arm64,windows-amd64}`:
+
+```powershell
+./build.ps1
 ```
 
 ## Deploy
