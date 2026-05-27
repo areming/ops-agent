@@ -224,6 +224,8 @@ func (srv *server) handleControl(ctx context.Context, conn *transport.Conn, sess
 	case "clear":
 		sess.msgs = nil
 		return controlReply(conn, "对话已清空。", "")
+	case "yolo":
+		return controlReply(conn, srv.controlYolo(sess, req.Arg), "")
 	default:
 		return controlReply(conn, "", "unknown control command: "+req.Cmd)
 	}
@@ -261,6 +263,23 @@ func (srv *server) controlModels(arg string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("已切换模型 → %s", arg), nil
+}
+
+// controlYolo toggles or sets the session's auto-approve mode. Arg "on"/"off"
+// sets explicitly; empty toggles. Danger commands still require confirmation.
+func (srv *server) controlYolo(sess *session, arg string) string {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "on":
+		sess.yolo = true
+	case "off":
+		sess.yolo = false
+	default:
+		sess.yolo = !sess.yolo
+	}
+	if sess.yolo {
+		return "YOLO 已开启：本会话写操作自动放行（危险命令仍会确认）。/yolo off 关闭。"
+	}
+	return "YOLO 已关闭：写操作恢复逐条确认。"
 }
 
 // controlLogs returns the most recent audit entries, mirroring the `logs`
@@ -322,7 +341,7 @@ func errString(err error) string {
 // frame. It returns an error only when the connection can no longer be
 // written, ending the session.
 func (srv *server) chatTurn(ctx context.Context, conn *transport.Conn, sess *session) error {
-	ia := &connInteraction{conn: conn, store: srv.store}
+	ia := &connInteraction{conn: conn, store: srv.store, sess: sess}
 	if err := srv.eng.runTurn(ctx, srv.provider(), srv.systemPrompt, ia, sess); err != nil {
 		return err
 	}
@@ -340,6 +359,7 @@ func writeError(conn *transport.Conn, msg string) {
 type connInteraction struct {
 	conn  *transport.Conn
 	store *memory.Store
+	sess  *session
 }
 
 func (connInteraction) source() string { return "chat" }
@@ -364,7 +384,20 @@ func (c *connInteraction) onToolStart(tool, command string) {
 func (c *connInteraction) onError(msg string) { writeError(c.conn, msg) }
 
 func (c *connInteraction) confirm(tool, command string, v safety.Verdict) (bool, error) {
-	return confirm(c.conn, tool, command, v)
+	// Hard danger rules always prompt, regardless of yolo or prior approval.
+	if !v.Danger {
+		if c.sess.yolo || c.sess.approved[command] {
+			return true, nil
+		}
+	}
+	approved, always, err := confirm(c.conn, tool, command, v)
+	if err != nil {
+		return false, err
+	}
+	if approved && always && !v.Danger {
+		c.sess.approveAlways(command)
+	}
+	return approved, nil
 }
 
 func (c *connInteraction) declineRun(ctx context.Context, command string, v safety.Verdict) string {

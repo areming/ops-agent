@@ -11,6 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
+
+	"golang.org/x/term"
 
 	"github.com/areming/ops-agent/internal/transport"
 )
@@ -145,8 +148,8 @@ func repl(conn *transport.Conn, label string) error {
 }
 
 // handleSlash interprets a /command typed at the prompt. Local-only commands
-// (/help, /quit) are handled here; /models, /logs and /clear become control
-// frames to the connected agent — so they act on whichever machine the
+// (/help, /quit) are handled here; /models, /logs, /clear and /yolo become
+// control frames to the connected agent — so they act on whichever machine the
 // session is talking to (local or remote). quit=true ends the session.
 func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 	cmd, arg, _ := strings.Cut(strings.TrimPrefix(line, "/"), " ")
@@ -158,7 +161,7 @@ func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 		return false, nil
 	case "quit", "exit", "q":
 		return true, nil
-	case "models", "logs", "clear":
+	case "models", "logs", "clear", "yolo":
 		return false, sendControl(conn, cmd, arg)
 	default:
 		fmt.Printf("未知命令 /%s（试试 /help）\n", cmd)
@@ -198,16 +201,23 @@ func printSlashHelp() {
 	fmt.Print(`命令：
   /models [名称]   查看模型；带名称则切换当前会话所连机器的模型
   /logs [N]        查看最近 N 条操作日志（默认 20）
+  /yolo [on|off]   切换自动放行：开启后写操作不再逐条确认（危险命令仍拦），不带参数为切换
   /clear           清空当前对话
   /help            显示本帮助
   /quit            退出
 `)
 }
 
-// drain handles frames for one turn until Done.
+// drain handles frames for one turn until Done. It shows a spinner on stderr
+// during the silent gaps — waiting on the model's first token, and while a
+// command runs — so the session never looks frozen. The spinner is cleared the
+// instant any frame arrives, and never runs while assistant text is streaming.
 func drain(conn *transport.Conn, in *bufio.Scanner) error {
+	sp := startSpinner("思考中…")
 	for {
 		f, err := conn.ReadFrame()
+		sp.stop()
+		sp = nil
 		if err != nil {
 			return err
 		}
@@ -219,11 +229,13 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 			var p transport.ToolStartPayload
 			_ = f.Decode(&p)
 			fmt.Printf("\n▶ %s: %s\n", p.Tool, p.Command)
+			sp = startSpinner("执行中…")
 		case transport.TypeConfirmRequest:
 			var p transport.ConfirmRequestPayload
 			_ = f.Decode(&p)
+			approved, always := askConfirm(in, p)
 			reply, err := transport.PayloadFrame(transport.TypeConfirmReply,
-				transport.ConfirmReplyPayload{Approved: askConfirm(in, p)})
+				transport.ConfirmReplyPayload{Approved: approved, Always: always})
 			if err != nil {
 				return err
 			}
@@ -241,14 +253,65 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 	}
 }
 
-// askConfirm shows the flagged action and reads a yes/no answer. EOF or
-// anything other than y/yes is treated as a denial.
-func askConfirm(in *bufio.Scanner, p transport.ConfirmRequestPayload) bool {
-	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  执行? [y/N] ",
+// askConfirm shows the flagged action and reads the answer. "y" approves once;
+// "a" approves and asks the agent to auto-allow this exact command for the rest
+// of the session. EOF or anything else is a denial.
+func askConfirm(in *bufio.Scanner, p transport.ConfirmRequestPayload) (approved, always bool) {
+	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  执行? [y=本次 / a=本会话始终 / N=拒绝] ",
 		p.Risk, p.Tool, p.Command, p.Reason)
 	if !in.Scan() {
-		return false
+		return false, false
 	}
-	ans := strings.ToLower(strings.TrimSpace(in.Text()))
-	return ans == "y" || ans == "yes"
+	switch strings.ToLower(strings.TrimSpace(in.Text())) {
+	case "y", "yes":
+		return true, false
+	case "a", "always":
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// spinner animates a one-line status indicator on stderr. It is purely
+// cosmetic — output goes to stderr so it never mixes into piped stdout, and it
+// only animates when stderr is an interactive terminal.
+type spinner struct {
+	quit chan struct{}
+	done chan struct{}
+}
+
+// startSpinner begins animating label until stop is called. It returns nil
+// (a no-op spinner) when stderr is not a terminal.
+func startSpinner(label string) *spinner {
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return nil
+	}
+	s := &spinner{quit: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(s.done)
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		tk := time.NewTicker(120 * time.Millisecond)
+		defer tk.Stop()
+		for i := 0; ; i++ {
+			select {
+			case <-s.quit:
+				return
+			case <-tk.C:
+				fmt.Fprintf(os.Stderr, "\r%s %s ", frames[i%len(frames)], label)
+			}
+		}
+	}()
+	return s
+}
+
+// stop halts the animation, waits for the goroutine to exit, then clears the
+// status line — so no stray frame can land after the line is cleared. Safe to
+// call on a nil spinner (the non-terminal case).
+func (s *spinner) stop() {
+	if s == nil {
+		return
+	}
+	close(s.quit)
+	<-s.done
+	fmt.Fprint(os.Stderr, "\r"+strings.Repeat(" ", 40)+"\r")
 }

@@ -41,6 +41,9 @@ type Verdict struct {
 	Risk       string // low | medium | high
 	Reversible bool
 	Reason     string
+	// Danger is true when the action matched a hard danger rule. Session
+	// auto-approve modes (yolo) must never bypass these.
+	Danger bool
 }
 
 // Classify applies, in order: (1) hard danger rules, (2) the model's
@@ -48,19 +51,19 @@ type Verdict struct {
 // (4) confirm anything else that writes.
 func Classify(a Action) Verdict {
 	if label := matchDanger(a.Display); label != "" {
-		return Verdict{Confirm, "high", false, "matches dangerous pattern: " + label}
+		return Verdict{Confirm, "high", false, "matches dangerous pattern: " + label, true}
 	}
 
 	// The model can escalate to Confirm but never downgrade a rule.
 	if a.Eval.Risk == "high" || (a.Eval.Reversible != nil && !*a.Eval.Reversible) {
-		return Verdict{Confirm, evalRisk(a.Eval), false, "model flagged the action as risky or irreversible"}
+		return Verdict{Confirm, evalRisk(a.Eval), false, "model flagged the action as risky or irreversible", false}
 	}
 
 	if a.ReadOnly || isReadOnlyCommand(a.Display) {
-		return Verdict{Allow, "low", true, "read-only"}
+		return Verdict{Allow, "low", true, "read-only", false}
 	}
 
-	return Verdict{Confirm, "medium", reversibleOrFalse(a.Eval), "write operation needs confirmation"}
+	return Verdict{Confirm, "medium", reversibleOrFalse(a.Eval), "write operation needs confirmation", false}
 }
 
 func evalRisk(e SelfEval) string {

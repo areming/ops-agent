@@ -56,9 +56,11 @@ type ConfirmRequestPayload struct {
 	Reason  string `json:"reason"`
 }
 
-// ConfirmReplyPayload carries the user's decision.
+// ConfirmReplyPayload carries the user's decision. Always asks the agent to
+// auto-approve this exact command for the rest of the session (the "a" answer).
 type ConfirmReplyPayload struct {
 	Approved bool `json:"approved"`
+	Always   bool `json:"always,omitempty"`
 }
 
 // Frame is one message on the wire. Payload is type-specific JSON; for

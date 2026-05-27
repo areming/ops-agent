@@ -28,6 +28,21 @@ type session struct {
 	store *memory.Store
 	depth int
 	msgs  []model.Message
+
+	// yolo auto-approves non-danger write actions for this connection, set
+	// via /yolo. Hard danger rules still require confirmation.
+	yolo bool
+	// approved holds exact command strings the user approved "always" this
+	// session (the "a" answer to a confirm prompt).
+	approved map[string]bool
+}
+
+// approveAlways records cmd so the same command auto-runs for this session.
+func (s *session) approveAlways(cmd string) {
+	if s.approved == nil {
+		s.approved = map[string]bool{}
+	}
+	s.approved[cmd] = true
 }
 
 func newSession(store *memory.Store, depth int) *session {

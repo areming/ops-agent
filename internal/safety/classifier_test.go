@@ -48,6 +48,27 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestClassifyDangerFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		act  Action
+		want bool
+	}{
+		{"hard danger rule sets flag", Action{Display: "rm -rf /var/data"}, true},
+		{"danger even if model says safe", Action{Display: "mkfs.ext4 /dev/sdb1", Eval: SelfEval{Reversible: boolp(true), Risk: "low"}}, true},
+		{"plain write is not danger", Action{Display: "systemctl restart nginx"}, false},
+		{"model-escalated risk is not danger", Action{Display: "ps aux", Eval: SelfEval{Risk: "high"}}, false},
+		{"read-only is not danger", Action{Display: "ps aux"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Classify(c.act).Danger; got != c.want {
+				t.Errorf("Classify(%q).Danger = %v, want %v", c.act.Display, got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsPatrolAutoRemedy(t *testing.T) {
 	units := []string{"nginx", "postgresql.service"}
 	cases := []struct {

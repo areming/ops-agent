@@ -146,8 +146,9 @@ func (e *engine) execute(ctx context.Context, ia interaction, call model.ToolCal
 	return formatResult(res)
 }
 
-// confirm runs the request/reply handshake over a CLI connection.
-func confirm(conn *transport.Conn, tool, command string, v safety.Verdict) (bool, error) {
+// confirm runs the request/reply handshake over a CLI connection. always
+// reports whether the user asked to auto-approve this command for the session.
+func confirm(conn *transport.Conn, tool, command string, v safety.Verdict) (approved, always bool, err error) {
 	req, err := transport.PayloadFrame(transport.TypeConfirmRequest, transport.ConfirmRequestPayload{
 		Tool:    tool,
 		Command: command,
@@ -155,23 +156,23 @@ func confirm(conn *transport.Conn, tool, command string, v safety.Verdict) (bool
 		Reason:  v.Reason,
 	})
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if err := conn.WriteFrame(req); err != nil {
-		return false, err
+		return false, false, err
 	}
 	f, err := conn.ReadFrame()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if f.Type != transport.TypeConfirmReply {
-		return false, fmt.Errorf("expected confirm reply, got %s", f.Type)
+		return false, false, fmt.Errorf("expected confirm reply, got %s", f.Type)
 	}
 	var reply transport.ConfirmReplyPayload
 	if err := f.Decode(&reply); err != nil {
-		return false, err
+		return false, false, err
 	}
-	return reply.Approved, nil
+	return reply.Approved, reply.Always, nil
 }
 
 func audit(ctx context.Context, store *memory.Store, source, command string, v safety.Verdict, decision string, exitCode int, output string) {
