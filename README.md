@@ -152,7 +152,7 @@ ops key list
 
 ## 配置
 
-目前走环境变量（TOML 配置后置）。常用：
+配置优先级 **环境变量 > `config.json`（StateDir 下）> 内置默认**。模型选择（provider/model/base_url + 诊断三件）会在引导或 `/models` 切换时落进 `config.json`；API key **不**进配置，单独加密存在 keystore（条目名固定 `api_key`）。常用环境变量：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -169,6 +169,47 @@ ops key list
 | `OPSAGENT_PATROL_LOAD` | `2.0` | 每核 1 分钟负载告警阈值 |
 
 完整列表（含 state/db/knowledge 路径等）见 [ONBOARDING.md](ONBOARDING.md) §5。
+
+### 换 key / 换厂商
+
+ops 同一时刻只有**一个活跃 provider**（诊断模型默认复用它的 key），key 在 keystore 里固定存为 `api_key`。
+
+**① key 失效（过期/欠费/吊销），厂商不变**
+
+本地（`ops` 在你自己机器上）：
+
+```bash
+echo "$NEW_KEY" | ops key set api_key    # 或 ops key set api_key 后粘贴、Ctrl-D
+```
+
+下次 `ops` 即生效（本地每次运行都是新进程）。
+
+远程（enroll 过的机器，跑在 systemd 下）——运行中的 daemon 启动时已读 key，换完要重启重载。最省事是从本地重跑 enroll（幂等，自动换 key + 重启）：
+
+```bash
+echo "$NEW_KEY" | ops enroll <host> --provider <原 provider> --model <原 model>
+```
+
+或上机手动：
+
+```bash
+sudo runuser -u opsagent -- env OPSAGENT_STATE_DIR=/var/lib/opsagent ops key set api_key
+sudo systemctl restart opsagent
+```
+
+**② 换厂商 / 加新厂商**
+
+对话内 `/models <名称>` **只能在当前 provider 内换模型**，改不了 provider。换厂商要同时改 provider + base_url + key：
+
+本地：删掉 `config.json` 让下次 `ops` 重走引导，或手动改 `config.json` 的 `provider`/`model`/`base_url` 再 `ops key set api_key` 填新 key。本地配置目录：Windows `%AppData%\opsagent\`、macOS/Linux `~/.config/opsagent/`（含 `config.json` + `keystore.json`）。
+
+远程：直接用新厂商重跑 enroll，它会重写 unit 环境变量 + 换 key + 重启：
+
+```bash
+echo "$ANTHROPIC_KEY" | ops enroll <host> --provider anthropic --model claude-... [--base-url ...]
+```
+
+> **注（enroll 过的机器）**：enroll 把 `OPSAGENT_PROVIDER`（以及给了 `--model` 时的 `OPSAGENT_MODEL`）写进 systemd unit 的 `Environment=`，按上面的优先级会**盖过 `config.json`**。所以远程换 provider 靠改 `config.json` 无效，必须重跑 enroll（或手动改 unit 后 `daemon-reload`）；同理若 unit 钉了 `OPSAGENT_MODEL`，对话内 `/models` 的切换重启后可能被还原。
 
 ## 开发
 

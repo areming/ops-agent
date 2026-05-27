@@ -152,7 +152,7 @@ Details of patrol and fan-out (boundaries, safe defaults, verification) are in [
 
 ## Configuration
 
-Configuration is via environment variables for now (TOML config is deferred). Common ones:
+Precedence is **environment variable > `config.json` (under StateDir) > built-in default**. Model selection (provider/model/base_url + the three diagnosis fields) is persisted to `config.json` during onboarding or a `/models` switch; the API key is **not** stored in config — it lives encrypted in the keystore (always under the entry name `api_key`). Common environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -169,6 +169,47 @@ Configuration is via environment variables for now (TOML config is deferred). Co
 | `OPSAGENT_PATROL_LOAD` | `2.0` | per-CPU 1-minute load alert threshold |
 
 The full list (state/db/knowledge paths, etc.) is in [ONBOARDING.md](ONBOARDING.md) §5.
+
+### Rotating the key / switching providers
+
+ops has a **single active provider** at a time (the diagnosis model reuses its key by default), and the key is stored in the keystore under the fixed name `api_key`.
+
+**① The key stopped working (expired/quota/revoked), same provider**
+
+Local (`ops` on your own machine):
+
+```bash
+echo "$NEW_KEY" | ops key set api_key    # or: ops key set api_key, then paste + Ctrl-D
+```
+
+Effective on the next `ops` run (each local run is a fresh process).
+
+Remote (an enrolled host running under systemd) — the running daemon read the key at startup, so a restart is needed to reload. Easiest is to re-run enroll from your machine (idempotent; rotates the key and restarts):
+
+```bash
+echo "$NEW_KEY" | ops enroll <host> --provider <same provider> --model <same model>
+```
+
+Or on the host manually:
+
+```bash
+sudo runuser -u opsagent -- env OPSAGENT_STATE_DIR=/var/lib/opsagent ops key set api_key
+sudo systemctl restart opsagent
+```
+
+**② Switch / add a new provider**
+
+In-session `/models <name>` only switches the model **within the current provider** — it cannot change the provider. Switching providers means changing provider + base_url + key together:
+
+Local: delete `config.json` to re-trigger onboarding on the next `ops`, or edit `config.json`'s `provider`/`model`/`base_url` and run `ops key set api_key` with the new key. Local config dir: Windows `%AppData%\opsagent\`, macOS/Linux `~/.config/opsagent/` (holds `config.json` + `keystore.json`).
+
+Remote: re-run enroll with the new provider; it rewrites the unit's environment, rotates the key, and restarts:
+
+```bash
+echo "$ANTHROPIC_KEY" | ops enroll <host> --provider anthropic --model claude-... [--base-url ...]
+```
+
+> **Note (enrolled hosts)**: enroll writes `OPSAGENT_PROVIDER` (and `OPSAGENT_MODEL` when `--model` is given) into the systemd unit's `Environment=`, which by the precedence above **overrides `config.json`**. So switching providers remotely by editing `config.json` won't work — re-run enroll (or edit the unit and `daemon-reload`). Likewise, if the unit pins `OPSAGENT_MODEL`, an in-session `/models` switch may be reverted after a restart.
 
 ## Development
 
