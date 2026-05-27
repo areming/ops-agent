@@ -55,6 +55,10 @@ func main() {
 		err = runKey(args)
 	case "enroll":
 		err = runEnroll(args)
+	case "update":
+		err = runUpdate(args)
+	case "uninstall":
+		err = runUninstall(args)
 	case "logs":
 		err = runLogs(args)
 	case "todos":
@@ -214,6 +218,20 @@ func runEnroll(args []string) error {
 	})
 }
 
+func runUninstall(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	purge := fs.Bool("purge", false, "also delete state/config and (Linux enrolled) service user")
+	_ = fs.Parse(args)
+	return cli.Uninstall(*purge)
+}
+
+func runUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	checkOnly := fs.Bool("check", false, "check for updates without installing")
+	_ = fs.Parse(args)
+	return cli.Update(*checkOnly)
+}
+
 // runLogs prints the most recent audit entries from the local state DB.
 func runLogs(args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
@@ -318,6 +336,8 @@ usage:
   ops serve [--socket PATH]
   ops key set <name>             (value read from stdin)
   ops key list
+  ops update [-check]            update to the latest release
+  ops uninstall [--purge]        remove ops from this machine
   ops logs [-n N] [--db PATH]    show the audit trail
   ops todos [--db PATH]          show open self-heal todos
   ops _bridge [--socket PATH]    (internal; invoked over SSH)
