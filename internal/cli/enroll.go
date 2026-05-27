@@ -124,9 +124,25 @@ func obtainStep(host, arch string, opts EnrollOptions) (string, error) {
 	}
 	url := releaseBinURL(opts.Version, arch)
 	fmt.Fprintf(os.Stderr, "→ %s will fetch %s and verify sha256\n", host, url)
-	return fmt.Sprintf("BIN_SRC=/tmp/ops-dl-$$\n"+
-		"curl -fsSL %s -o \"$BIN_SRC\"\n"+
-		"echo \"%s  $BIN_SRC\" | sha256sum -c -", url, sum), nil
+	return releaseFetchSnippet(url, sum), nil
+}
+
+// releaseFetchSnippet builds the shell that downloads the binary to $BIN_SRC on
+// the remote and verifies its sha256. Bounded by --connect-timeout/--max-time
+// so a host that can't reach GitHub fails fast instead of hanging on a
+// blackholed connection; -# shows progress so a slow (but live) download isn't
+// mistaken for a freeze; on failure it points the operator at the offline scp
+// path (build locally, re-run) which never touches GitHub.
+func releaseFetchSnippet(url, sum string) string {
+	return fmt.Sprintf(`BIN_SRC=/tmp/ops-dl-$$
+echo '→ 远端从 GitHub 下载 ops 二进制（需远端能访问 github.com）...' >&2
+if ! curl -fL -S --connect-timeout 10 --max-time 600 -# %s -o "$BIN_SRC"; then
+  echo '✗ 远端拉取 GitHub release 失败：这台机器很可能连不上 github.com。' >&2
+  echo '  改用离线方式：本地先 ./build.ps1 生成 dist/ops-linux-*，再重跑 ops connect <host>，' >&2
+  echo '  二进制会经 SSH 直接 scp 过去（不依赖远端访问 GitHub）。' >&2
+  exit 1
+fi
+echo "%s  $BIN_SRC" | sha256sum -c -`, url, sum)
 }
 
 // localBinary returns the local linux binary to scp, or "" if none exists (so

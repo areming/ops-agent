@@ -128,6 +128,27 @@ func TestBuildBootstrapFetch(t *testing.T) {
 	}
 }
 
+func TestReleaseFetchSnippet(t *testing.T) {
+	s := releaseFetchSnippet("https://example/ops-linux-amd64", "abc123")
+	for _, want := range []string{
+		"--connect-timeout 10", // fail fast on a blackholed connection
+		"--max-time 600",       // hard ceiling on a stalled transfer
+		"-#",                   // visible progress, not silent
+		"https://example/ops-linux-amd64",
+		"abc123  $BIN_SRC",
+		"sha256sum -c -",
+		"build.ps1", // offline-path hint shown on failure
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("fetch snippet missing %q:\n%s", want, s)
+		}
+	}
+	// The old silent, timeout-less form must be gone — that was the hang.
+	if strings.Contains(s, "-fsSL") {
+		t.Errorf("snippet still uses silent curl (-fsSL):\n%s", s)
+	}
+}
+
 func TestLocalBinary(t *testing.T) {
 	// An explicit --bin that does not exist is an error.
 	if _, err := localBinary("/no/such/ops", "amd64"); err == nil {
