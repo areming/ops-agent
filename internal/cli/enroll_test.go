@@ -97,7 +97,10 @@ func TestBuildBootstrap(t *testing.T) {
 		"visudo -cf /tmp/opsagent.sudoers",
 		"runuser -u \"$SVC_USER\" -- env OPSAGENT_STATE_DIR=\"$STATE\" /usr/local/bin/ops key set api_key",
 		"usermod -aG \"$SVC_USER\" \"$SUDO_USER\"",
-		"systemctl enable --now opsagent.service",
+		"systemctl enable opsagent.service",
+		// restart (not just enable --now) so re-running enroll actually
+		// picks up a new binary instead of leaving the old process running.
+		"systemctl restart opsagent.service",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("bootstrap missing %q", want)

@@ -243,7 +243,8 @@ echo %[9]s | base64 -d | runuser -u "$SVC_USER" -- env OPSAGENT_STATE_DIR="$STAT
 if [ -n "${SUDO_USER:-}" ]; then usermod -aG "$SVC_USER" "$SUDO_USER"; fi
 
 systemctl daemon-reload
-systemctl enable --now opsagent.service
+systemctl enable opsagent.service
+systemctl restart opsagent.service
 echo "opsagent service started"
 `,
 		opts.User,               // 1
