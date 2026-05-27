@@ -29,6 +29,15 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
+		// On Windows, if the binary is not running from the install location
+		// (e.g. freshly downloaded), treat it as a self-install invocation.
+		if runtime.GOOS == "windows" && !cli.IsInstalledLocation() {
+			if err := cli.SelfInstall(); err != nil {
+				fmt.Fprintf(os.Stderr, "ops: install failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		// Bare `ops` opens a local conversation (onboarding first if the
 		// machine has no model configured yet).
 		if err := cli.RunLocal(); err != nil {
