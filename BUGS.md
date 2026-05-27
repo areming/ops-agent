@@ -5,12 +5,12 @@
 
 ---
 
-## BUG-001 tools 包无测试
+## BUG-001 tools 包无测试 ✅ 已解决
 
-**位置**：`internal/tools/`（shell.go, fileio.go）  
+**位置**：`internal/tools/`（shell.go, fileio.go, tool.go）  
 **现象**：shell 执行器和文件读写工具是系统操作的实际执行点，但没有 `*_test.go`。  
 **风险**：中——超时行为、stderr 捕获、文件权限边界未经自动验证。  
-**状态**：已知未处理
+**状态**：已解决（2026-05-27）。补了 `tool_test.go` / `shell_test.go` / `fileio_test.go` 共 16 个测试，覆盖 Registry 增删查序、shell 成功/非零退出/空命令/坏 JSON/取消的 context、truncate、文件读写往返/缺文件/坏路径/截断。注：60s 超时本身未直接计时验证（避免慢测试），但取消 context 路径已覆盖「进程未启动」分支。
 
 ---
 
