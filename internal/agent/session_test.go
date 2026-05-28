@@ -112,6 +112,49 @@ func TestHydrateDropsPartialToolResults(t *testing.T) {
 	assertWellFormed(t, sess.msgs)
 }
 
+// TestHydrateInjectsSessionBreak verifies that non-empty history gets a
+// synthetic session-break pair appended so the model does not auto-continue
+// a prior task when the user starts a fresh conversation.
+func TestHydrateInjectsSessionBreak(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	store.AppendMessage(ctx, model.Message{Role: model.RoleUser, Content: "check nginx"})
+	store.AppendMessage(ctx, model.Message{Role: model.RoleAssistant, Content: "done"})
+
+	sess := newSession(store, 50)
+	if err := sess.hydrate(ctx); err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+
+	n := len(sess.msgs)
+	if n < 2 {
+		t.Fatalf("expected at least 2 msgs after hydrate, got %d", n)
+	}
+	if got := sess.msgs[n-2].Content; got != sessionBreakMsgs[0].Content {
+		t.Errorf("session break user msg: got %q, want %q", got, sessionBreakMsgs[0].Content)
+	}
+	if got := sess.msgs[n-1].Content; got != sessionBreakMsgs[1].Content {
+		t.Errorf("session break asst msg: got %q, want %q", got, sessionBreakMsgs[1].Content)
+	}
+	assertWellFormed(t, sess.msgs)
+}
+
+// TestHydrateEmptyHistoryNoBreak verifies that an empty DB produces no msgs
+// at all — no synthetic break is injected for a brand-new install.
+func TestHydrateEmptyHistoryNoBreak(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	sess := newSession(store, 50)
+	if err := sess.hydrate(ctx); err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	if len(sess.msgs) != 0 {
+		t.Errorf("expected empty msgs for empty history, got %d", len(sess.msgs))
+	}
+}
+
 func openTestStore(t *testing.T) *memory.Store {
 	t.Helper()
 	store, err := memory.Open(filepath.Join(t.TempDir(), "state.db"))

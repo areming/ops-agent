@@ -49,8 +49,18 @@ func newSession(store *memory.Store, depth int) *session {
 	return &session{store: store, depth: depth}
 }
 
-// hydrate seeds the session with the most recent persisted messages so a
-// reopened connection continues the same rolling thread.
+// sessionBreakMsgs is a synthetic user+assistant pair appended to hydrated
+// history. It is never persisted — assigned directly to s.msgs — so the
+// model treats the recalled messages as read-only context and waits for a
+// new instruction instead of resuming an interrupted prior task.
+var sessionBreakMsgs = []model.Message{
+	{Role: model.RoleUser, Content: "[新会话] 以上是历史操作记录，请不要继续历史任务，等待新指令。"},
+	{Role: model.RoleAssistant, Content: "好的，新会话开始，请告诉我需要做什么。"},
+}
+
+// hydrate seeds the session with the most recent persisted messages so the
+// model has context of prior work, then injects a session-break marker so
+// it does not automatically continue an interrupted task.
 func (s *session) hydrate(ctx context.Context) error {
 	if s.store == nil || s.depth <= 0 {
 		return nil
@@ -59,7 +69,11 @@ func (s *session) hydrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.msgs = sanitizeHistory(msgs)
+	sanitized := sanitizeHistory(msgs)
+	if len(sanitized) == 0 {
+		return nil
+	}
+	s.msgs = append(sanitized, sessionBreakMsgs...)
 	return nil
 }
 
