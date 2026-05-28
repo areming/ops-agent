@@ -18,6 +18,33 @@ import (
 	"github.com/areming/ops-agent/internal/transport"
 )
 
+// printWelcomeBanner prints an ASCII robot banner with version and model info.
+// Called from RunLocal only (bare `ops`), not from connect paths.
+func printWelcomeBanner(provider, model, ver string) {
+	modelLine := provider
+	if model != "" {
+		modelLine += " / " + model
+	}
+	fmt.Println()
+	fmt.Println(`  ╭──────────────────────────────────────────────`)
+	fmt.Println(`  │`)
+	fmt.Println(`  │   ╭─────╮   ops — 轻量运维助手`)
+	fmt.Println(`  │   │◉   ◉│`)
+	fmt.Printf("  │   │  ─  │   %s  ·  %s\n", ver, modelLine)
+	fmt.Println(`  │   ╰──┬──╯`)
+	fmt.Println(`  │   ╭──┴──╮   /help 查命令  ·  ^D 退出`)
+	fmt.Println(`  │   │▓▓▓▓▓│`)
+	fmt.Println(`  │   ╰─────╯`)
+	fmt.Println(`  │`)
+	fmt.Println(`  ╰──────────────────────────────────────────────`)
+	fmt.Println()
+}
+
+// clearScreen clears the terminal using ANSI escape sequences.
+func clearScreen() {
+	fmt.Print("\033[H\033[2J")
+}
+
 // RemoteHasBinary reports whether bin is on PATH on host. A non-zero exit
 // from `command -v` means absent; any other failure (e.g. SSH itself) is an
 // error.
@@ -48,6 +75,7 @@ func ConnectLocal(socketPath string) error {
 		return err
 	}
 	defer nc.Close()
+	fmt.Printf("ops @ local — /help 查命令（^D 退出）\n")
 	return repl(transport.NewConn(nc), "local")
 }
 
@@ -75,6 +103,7 @@ func ConnectSSH(host, remoteSocket, remoteBin string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("ops @ %s — /help 查命令（^D 退出）\n", host)
 	rerr := repl(conn, host)
 	if cerr := cleanup(); rerr == nil {
 		rerr = cerr
@@ -116,7 +145,6 @@ func sshBridge(host, remoteSocket, remoteBin string) (*transport.Conn, func() er
 // ends the session. label identifies the connected host in the banner and
 // prompt so multiple sessions are easy to tell apart.
 func repl(conn *transport.Conn, label string) error {
-	fmt.Printf("ops @ %s — type a message, /help for commands (Ctrl-D to quit).\n", label)
 	in := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Printf("[%s] > ", label)
@@ -161,7 +189,10 @@ func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 		return false, nil
 	case "quit", "exit", "q":
 		return true, nil
-	case "models", "logs", "clear", "yolo":
+	case "clear":
+		clearScreen()
+		return false, sendControl(conn, cmd, arg)
+	case "models", "logs", "yolo":
 		return false, sendControl(conn, cmd, arg)
 	default:
 		fmt.Printf("未知命令 /%s（试试 /help）\n", cmd)

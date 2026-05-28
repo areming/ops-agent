@@ -7,6 +7,7 @@ import (
 	"github.com/areming/ops-agent/internal/config"
 	"github.com/areming/ops-agent/internal/secret"
 	"github.com/areming/ops-agent/internal/transport"
+	"github.com/areming/ops-agent/internal/version"
 )
 
 // RunLocal starts an in-process conversation on this machine. If no model is
@@ -19,6 +20,9 @@ func RunLocal() error {
 			return err
 		}
 	}
+
+	cfg := config.Load()
+	printWelcomeBanner(cfg.Provider, cfg.Model, version.Value)
 
 	client, server := net.Pipe()
 	errc := make(chan error, 1)
