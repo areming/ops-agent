@@ -84,6 +84,34 @@ func TestHydrateDropsLeadingOrphanToolResults(t *testing.T) {
 	assertWellFormed(t, sess.msgs)
 }
 
+// TestHydrateDropsPartialToolResults reproduces the 400 caused by a crash
+// mid-turn: the assistant declared N tool_calls but only M < N results were
+// written before the process died. The last persisted message is a tool result
+// (not an assistant-with-calls), so the old trailing-drop loop missed it.
+func TestHydrateDropsPartialToolResults(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	store.AppendMessage(ctx, model.Message{Role: model.RoleUser, Content: "deploy blog"})
+	store.AppendMessage(ctx, model.Message{
+		Role: model.RoleAssistant,
+		ToolCalls: []model.ToolCall{
+			{ID: "c1", Name: "shell", Arguments: json.RawMessage(`{}`)},
+			{ID: "c2", Name: "shell", Arguments: json.RawMessage(`{}`)},
+			{ID: "c3", Name: "shell", Arguments: json.RawMessage(`{}`)},
+		},
+	})
+	store.AppendMessage(ctx, model.Message{Role: model.RoleTool, ToolCallID: "c1", Content: "done"})
+	store.AppendMessage(ctx, model.Message{Role: model.RoleTool, ToolCallID: "c2", Content: "done"})
+	// c3 result never written — simulates crash between execute calls.
+
+	sess := newSession(store, 50)
+	if err := sess.hydrate(ctx); err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	assertWellFormed(t, sess.msgs)
+}
+
 func openTestStore(t *testing.T) *memory.Store {
 	t.Helper()
 	store, err := memory.Open(filepath.Join(t.TempDir(), "state.db"))

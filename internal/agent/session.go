@@ -64,31 +64,55 @@ func (s *session) hydrate(ctx context.Context) error {
 }
 
 // sanitizeHistory trims a recalled message window into a valid tool-call
-// transcript, which the model API requires: every assistant tool_call must be
-// followed by matching tool results. A raw window can violate this two ways —
-// the rolling LIMIT can start mid-exchange, orphaning leading tool results
-// whose assistant call was cut out; and an interrupted turn can persist an
-// assistant call whose tool results were never written, leaving it dangling
-// at the tail. Both make the next request 400, so drop them here.
+// transcript. The model API requires every assistant tool_call_id to be
+// answered by a matching tool message. A raw window can violate this in three
+// ways:
+//
+//  1. Rolling LIMIT starts mid-exchange: leading tool results whose assistant
+//     call was cut out → drop them.
+//  2. Interrupted turn with zero results persisted: trailing assistant
+//     tool_calls with no following tool messages → covered by (3).
+//  3. Interrupted turn with partial results: assistant declared N calls but
+//     only M < N results were written before the process died. The last
+//     message is a tool result (not an assistant), so a tail-only check misses
+//     this. The forward scan below catches it.
 func sanitizeHistory(msgs []model.Message) []model.Message {
-	// Drop leading tool results with no introducing assistant call in window.
+	// Drop leading orphaned tool results.
 	start := 0
 	for start < len(msgs) && msgs[start].Role == model.RoleTool {
 		start++
 	}
 	msgs = msgs[start:]
 
-	// Drop any trailing assistant message whose tool_calls were never
-	// answered (the answers would follow it, but it is last).
-	for len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if last.Role == model.RoleAssistant && len(last.ToolCalls) > 0 {
-			msgs = msgs[:len(msgs)-1]
+	// Walk forward, tracking the last position known to be fully valid.
+	// An assistant message with tool_calls opens an exchange; it is complete
+	// only when every call_id is answered by an immediately-following tool
+	// message. Stop and trim at the first incomplete exchange.
+	validEnd := 0
+	i := 0
+	for i < len(msgs) {
+		m := msgs[i]
+		if m.Role != model.RoleAssistant || len(m.ToolCalls) == 0 {
+			validEnd = i + 1
+			i++
 			continue
 		}
-		break
+		needed := make(map[string]bool, len(m.ToolCalls))
+		for _, tc := range m.ToolCalls {
+			needed[tc.ID] = true
+		}
+		j := i + 1
+		for j < len(msgs) && msgs[j].Role == model.RoleTool {
+			delete(needed, msgs[j].ToolCallID)
+			j++
+		}
+		if len(needed) > 0 {
+			break // incomplete exchange — trim everything from here
+		}
+		validEnd = j
+		i = j
 	}
-	return msgs
+	return msgs[:validEnd]
 }
 
 func (s *session) addUser(ctx context.Context, text string) {
