@@ -97,6 +97,10 @@ func ConnectSSH(host, remoteSocket, remoteBin string) error {
 			return err
 		}
 		fmt.Fprintln(os.Stderr, "（若 connect 被拒，重新登录一次 SSH 让 opsagent 组生效）")
+	} else {
+		// Already installed: a fresh install is current by definition, so only
+		// the already-installed path checks for a newer release.
+		maybeOfferUpdate(host, remoteBin)
 	}
 
 	conn, cleanup, err := sshBridge(host, remoteSocket, remoteBin)

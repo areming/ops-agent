@@ -351,8 +351,9 @@ func usage() {
 usage:
   ops                            open a local conversation (onboards if unconfigured)
   ops setup                      guided first-time deploy (interactive)
-  ops enroll <host> [flags]      deploy the agent to a Linux host
+  ops connect <host>             connect to a host (auto-installs if missing, offers an update if one exists)
   ops connect <host> [--socket REMOTE_PATH] [--bin REMOTE_BIN]
+  ops enroll <host> [flags]      advanced: scripted first-time deploy to a Linux host (day-to-day, just use connect)
   ops connect --local PATH
   ops run -c "<instruction>" <host>... [--yes]   run one instruction across hosts
   ops serve [--socket PATH]

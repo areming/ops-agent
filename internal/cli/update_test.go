@@ -22,6 +22,25 @@ func TestReleaseBinAsset(t *testing.T) {
 	}
 }
 
+func TestShouldOfferUpdate(t *testing.T) {
+	cases := []struct {
+		remote, latest string
+		want           bool
+	}{
+		{"v0.0.2", "v0.0.3", true},  // older remote → offer
+		{"v0.0.3", "v0.0.3", false}, // already current → no offer
+		{"v0.0.4", "v0.0.3", true},  // differs (newer remote) → still offer; user decides
+		{"dev", "v0.0.3", false},    // unversioned local build → can't compare, skip
+		{"", "v0.0.3", false},       // version probe failed → skip
+		{"v0.0.3", "", false},       // release lookup failed → skip
+	}
+	for _, tc := range cases {
+		if got := shouldOfferUpdate(tc.remote, tc.latest); got != tc.want {
+			t.Errorf("shouldOfferUpdate(%q,%q) = %v, want %v", tc.remote, tc.latest, got, tc.want)
+		}
+	}
+}
+
 func TestVerifyFile(t *testing.T) {
 	content := []byte("hello ops update")
 	sum := sha256.Sum256(content)

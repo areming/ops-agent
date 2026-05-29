@@ -85,6 +85,122 @@ func Update(checkOnly bool) error {
 	return nil
 }
 
+// maybeOfferUpdate checks the agent already installed on host against the
+// latest release and, when they differ, offers to update it in place before
+// the session starts. Probing is best-effort: any failure (an SSH hiccup, no
+// GitHub reachability, a "dev" build) silently skips the offer, because a
+// version check must never block an operator from connecting.
+func maybeOfferUpdate(host, bin string) {
+	remote, err := RemoteVersion(host, bin)
+	if err != nil {
+		return
+	}
+	latest, err := LatestReleaseVersion()
+	if err != nil {
+		return
+	}
+	if !shouldOfferUpdate(remote, latest) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s 上的 ops 是 %s，最新 release 是 %s。\n", host, remote, latest)
+	if !promptYesNo(fmt.Sprintf("现在更新 %s 到 %s? [Y/n] ", host, latest)) {
+		return
+	}
+	if err := updateRemoteHost(host, bin); err != nil {
+		fmt.Fprintf(os.Stderr, "✗ 更新失败（跳过，继续用当前版本连接）：%v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "✓ 已更新并重启 %s 上的 opsagent\n", host)
+}
+
+// shouldOfferUpdate reports whether an update should be offered: both versions
+// are known, the remote is a released build (not an unversioned "dev" one we
+// can't compare), and they differ.
+func shouldOfferUpdate(remote, latest string) bool {
+	if remote == "" || latest == "" || remote == "dev" {
+		return false
+	}
+	return remote != latest
+}
+
+// RemoteVersion returns the version string the agent binary on host reports.
+func RemoteVersion(host, bin string) (string, error) {
+	out, err := exec.Command("ssh", host, bin, "version").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// updateRemoteHost updates the agent on host, then restarts the service so the
+// new binary goes live (the remote `ops update` only prints a restart hint, it
+// does not restart itself). It prefers the remote self-update over HTTPS; when
+// that fails — most often because the host can't reach GitHub — it falls back
+// to pushing a locally-built binary over SSH, which never touches GitHub.
+func updateRemoteHost(host, bin string) error {
+	if err := remoteSelfUpdate(host, bin); err != nil {
+		fmt.Fprintf(os.Stderr, "远端自更新失败（%v），改用本地二进制推送…\n", err)
+		if err := pushLocalBinary(host); err != nil {
+			return err
+		}
+	}
+	return restartRemoteService(host)
+}
+
+// remoteSelfUpdate runs `ops update` on host over SSH. It needs passwordless
+// sudo (the binary lives in /usr/local/bin, owned by root) — `sudo -n` so a
+// password requirement fails fast instead of hanging.
+func remoteSelfUpdate(host, bin string) error {
+	cmd := exec.Command("ssh", host, "sudo", "-n", bin, "update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// pushLocalBinary scp's a locally-built linux binary to host and installs it
+// over the existing one (no re-provisioning of user/sudoers/unit — this is an
+// update, not an enroll). Requires a dist/ build; without one it returns an
+// error pointing at build.ps1.
+func pushLocalBinary(host string) error {
+	arch, err := detectArch(host)
+	if err != nil {
+		return err
+	}
+	local, err := localBinary("", arch)
+	if err != nil {
+		return err
+	}
+	if local == "" {
+		return fmt.Errorf("没有本地 dist/ops-linux-%s 可推送；先 ./build.ps1 再重试", arch)
+	}
+	remoteTmp := fmt.Sprintf("/tmp/ops-update-%d", time.Now().UnixNano())
+	fmt.Fprintf(os.Stderr, "→ copying %s to %s:%s\n", local, host, remoteTmp)
+	if err := run("scp", local, host+":"+remoteTmp); err != nil {
+		return fmt.Errorf("copy binary: %w", err)
+	}
+	script := fmt.Sprintf(`set -euo pipefail
+install -m 0755 %[1]s %[2]s
+ln -sf %[2]s %[3]s
+rm -f %[1]s`, remoteTmp, installBinPath, legacyBinPath)
+	cmd := exec.Command("ssh", host, "sudo", "-n", "bash", "-s")
+	cmd.Stdin = strings.NewReader(script)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("install binary (ensure passwordless sudo or root): %w", err)
+	}
+	return nil
+}
+
+// restartRemoteService restarts the opsagent unit on host so a freshly
+// installed binary takes effect.
+func restartRemoteService(host string) error {
+	cmd := exec.Command("ssh", host, "sudo", "-n", "systemctl", "restart", "opsagent.service")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // downloadToTemp fetches url into a temporary file and returns its path.
 func downloadToTemp(url string) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Minute}
