@@ -284,10 +284,111 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 	}
 }
 
-// askConfirm shows the flagged action and reads the answer. "y" approves once;
-// "a" approves and asks the agent to auto-allow this exact command for the rest
-// of the session. EOF or anything else is a denial.
+// askConfirm shows the flagged action and returns the user's decision. On an
+// interactive terminal it renders an arrow-key menu (↑/↓ to move, Enter to
+// choose) with a one-line purpose under each option; on a non-TTY session
+// (piped input/output) it falls back to a single-line y/a/N prompt so
+// automation and SSH-without-tty still work.
 func askConfirm(in *bufio.Scanner, p transport.ConfirmRequestPayload) (approved, always bool) {
+	inFd := int(os.Stdin.Fd())
+	if term.IsTerminal(inFd) && term.IsTerminal(int(os.Stdout.Fd())) {
+		if a, al, ok := askConfirmMenu(inFd, p); ok {
+			return a, al
+		}
+	}
+	return askConfirmLine(in, p)
+}
+
+// confirmChoice is one selectable option and the decision it carries.
+type confirmChoice struct {
+	label    string
+	desc     string
+	approved bool
+	always   bool
+}
+
+// confirmChoices are the menu options, in display order. The middle option's
+// "always" maps to ConfirmReplyPayload.Always — the agent auto-runs this exact
+// command for the rest of the session.
+var confirmChoices = []confirmChoice{
+	{"本次执行", "只运行这一条命令", true, false},
+	{"本会话始终允许", "本会话内不再询问这条命令", true, true},
+	{"拒绝", "不执行，把原因反馈给助手", false, false},
+}
+
+// askConfirmMenu renders an interactive arrow-key menu on a raw terminal.
+// ok is false when raw mode can't be entered, so the caller falls back to the
+// line prompt. A read error, Esc, or Ctrl-C is treated as a denial.
+func askConfirmMenu(fd int, p transport.ConfirmRequestPayload) (approved, always, ok bool) {
+	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  ↑/↓ 选择 · Enter 确认 · Esc 拒绝\n",
+		p.Risk, p.Tool, p.Command, p.Reason)
+
+	old, err := term.MakeRaw(fd)
+	if err != nil {
+		return false, false, false
+	}
+	defer fmt.Print("\n")       // runs after Restore: clean line in cooked mode
+	defer term.Restore(fd, old) //nolint:errcheck // best-effort restore
+
+	sel := 0
+	render := func() {
+		for i, c := range confirmChoices {
+			marker := "  "
+			if i == sel {
+				marker = "❯ "
+			}
+			fmt.Printf("\r\x1b[K%s%s  %s\r\n", marker, c.label, c.desc)
+		}
+	}
+	render()
+
+	// In raw mode an arrow key arrives as a 3-byte escape sequence (ESC [ A/B).
+	buf := make([]byte, 4)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			return false, false, true
+		}
+		switch {
+		case buf[0] == 3, buf[0] == 27 && n == 1: // Ctrl-C or lone Esc → deny
+			return false, false, true
+		case buf[0] == '\r', buf[0] == '\n':
+			c := confirmChoices[sel]
+			return c.approved, c.always, true
+		case n >= 3 && buf[0] == 27 && buf[1] == '[':
+			switch buf[2] {
+			case 'A': // up
+				if sel > 0 {
+					sel--
+				}
+			case 'B': // down
+				if sel < len(confirmChoices)-1 {
+					sel++
+				}
+			}
+		case buf[0] == 'k':
+			if sel > 0 {
+				sel--
+			}
+		case buf[0] == 'j':
+			if sel < len(confirmChoices)-1 {
+				sel++
+			}
+		case buf[0] >= '1' && buf[0] <= '9':
+			if i := int(buf[0] - '1'); i < len(confirmChoices) {
+				c := confirmChoices[i]
+				return c.approved, c.always, true
+			}
+		}
+		fmt.Printf("\x1b[%dA", len(confirmChoices)) // back to the first option line
+		render()
+	}
+}
+
+// askConfirmLine is the non-interactive fallback. "y" approves once; "a"
+// approves and auto-allows this exact command for the session. EOF or anything
+// else is a denial.
+func askConfirmLine(in *bufio.Scanner, p transport.ConfirmRequestPayload) (approved, always bool) {
 	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  执行? [y=本次 / a=本会话始终 / N=拒绝] ",
 		p.Risk, p.Tool, p.Command, p.Reason)
 	if !in.Scan() {
