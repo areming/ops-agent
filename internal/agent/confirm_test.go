@@ -77,6 +77,39 @@ func TestConfirmYoloStillPromptsDanger(t *testing.T) {
 	<-done
 }
 
+// An interactive session auto-runs non-danger actions out of the box (no
+// /yolo needed). A successful return without anyone answering the wire proves
+// it short-circuited — an unanswered prompt would block on write.
+func TestInteractiveSessionAutoApprovesNonDanger(t *testing.T) {
+	agentConn, _ := connPair(t)
+	sess := newInteractiveSession(nil, 0)
+	ia := &connInteraction{conn: agentConn, sess: sess}
+
+	ok, err := ia.confirm("shell", "systemctl restart nginx", safety.Verdict{Decision: safety.Confirm})
+	if err != nil {
+		t.Fatalf("confirm err: %v", err)
+	}
+	if !ok {
+		t.Fatal("interactive session did not auto-approve a non-danger write by default")
+	}
+}
+
+func TestInteractiveSessionStillPromptsDanger(t *testing.T) {
+	agentConn, clientConn := connPair(t)
+	sess := newInteractiveSession(nil, 0)
+	ia := &connInteraction{conn: agentConn, sess: sess}
+
+	done := answerConfirm(t, clientConn, transport.ConfirmReplyPayload{Approved: false})
+	ok, err := ia.confirm("shell", "rm -rf /data", safety.Verdict{Decision: safety.Confirm, Danger: true})
+	if err != nil {
+		t.Fatalf("confirm err: %v", err)
+	}
+	if ok {
+		t.Fatal("danger command was auto-approved in an interactive session")
+	}
+	<-done
+}
+
 func TestConfirmAlwaysCachesForSession(t *testing.T) {
 	agentConn, clientConn := connPair(t)
 	sess := newSession(nil, 0)

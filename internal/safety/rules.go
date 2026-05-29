@@ -1,11 +1,39 @@
 package safety
 
 import (
+	"fmt"
 	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 )
+
+// writeReason explains why a non-read-only command needs confirmation, naming
+// the command so the prompt is a concrete reason rather than the same sentence
+// every time. Used only in strict mode (`/yolo off`); the default auto-run mode
+// confirms only hard danger rules, whose reason already carries the rule label.
+func writeReason(display string) string {
+	if tok := commandName(display); tok != "" {
+		return fmt.Sprintf("%q 不在只读白名单内，可能修改系统状态", tok)
+	}
+	return "该操作可能修改系统状态，不在只读白名单内"
+}
+
+// commandName returns the binary name a command line invokes, skipping any
+// leading VAR=value assignments, a leading sudo, and flag tokens, and stripping
+// a path prefix (/usr/bin/systemctl -> systemctl). Empty when none is found.
+func commandName(display string) string {
+	for f := range strings.FieldsSeq(display) {
+		if strings.Contains(f, "=") && !strings.HasPrefix(f, "-") {
+			continue // VAR=value assignment
+		}
+		if f == "sudo" || strings.HasPrefix(f, "-") {
+			continue
+		}
+		return baseName(f)
+	}
+	return ""
+}
 
 // dangerRule pairs a pattern with a human-readable label for the
 // confirmation reason.

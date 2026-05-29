@@ -171,7 +171,7 @@ func (srv *server) handle(nc net.Conn) {
 	defer cancel()
 
 	conn := transport.NewConn(nc)
-	sess := newSession(srv.store, srv.historyDepth)
+	sess := newInteractiveSession(srv.store, srv.historyDepth)
 	if err := sess.hydrate(ctx); err != nil {
 		log.Printf("load history: %v", err)
 	}
@@ -277,9 +277,9 @@ func (srv *server) controlYolo(sess *session, arg string) string {
 		sess.yolo = !sess.yolo
 	}
 	if sess.yolo {
-		return "YOLO 已开启：本会话写操作自动放行（危险命令仍会确认）。/yolo off 关闭。"
+		return "自动放行：开（默认）。非危险操作直接执行，危险命令仍会确认。/yolo off 改为逐条确认。"
 	}
-	return "YOLO 已关闭：写操作恢复逐条确认。"
+	return "自动放行：关。本会话写操作恢复逐条确认。/yolo on 恢复默认。"
 }
 
 // controlLogs returns the most recent audit entries, mirroring the `logs`

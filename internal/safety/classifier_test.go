@@ -1,6 +1,30 @@
 package safety
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// Confirm prompts carry a concrete, command-specific reason — not one identical
+// sentence every time — so the user can see why a given action was flagged.
+func TestVerdictReasonsAreSpecific(t *testing.T) {
+	danger := Classify(Action{Display: "rm -rf /data"}).Reason
+	if !strings.Contains(danger, "rm") {
+		t.Errorf("danger reason should name the matched rule: %q", danger)
+	}
+
+	w1 := Classify(Action{Display: "systemctl restart nginx"}).Reason
+	if !strings.Contains(w1, "systemctl") {
+		t.Errorf("write reason should name the command: %q", w1)
+	}
+	w2 := Classify(Action{Display: "/usr/bin/apt install foo"}).Reason
+	if !strings.Contains(w2, "apt") {
+		t.Errorf("write reason should strip the path and name the binary: %q", w2)
+	}
+	if w1 == w2 {
+		t.Errorf("write reasons should vary by command, got identical: %q", w1)
+	}
+}
 
 func boolp(b bool) *bool { return &b }
 

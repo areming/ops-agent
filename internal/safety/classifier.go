@@ -51,19 +51,19 @@ type Verdict struct {
 // (4) confirm anything else that writes.
 func Classify(a Action) Verdict {
 	if label := matchDanger(a.Display); label != "" {
-		return Verdict{Confirm, "high", false, "matches dangerous pattern: " + label, true}
+		return Verdict{Confirm, "high", false, "命中危险规则：" + label, true}
 	}
 
 	// The model can escalate to Confirm but never downgrade a rule.
 	if a.Eval.Risk == "high" || (a.Eval.Reversible != nil && !*a.Eval.Reversible) {
-		return Verdict{Confirm, evalRisk(a.Eval), false, "model flagged the action as risky or irreversible", false}
+		return Verdict{Confirm, evalRisk(a.Eval), false, "模型自评为高风险或不可逆操作", false}
 	}
 
 	if a.ReadOnly || isReadOnlyCommand(a.Display) {
 		return Verdict{Allow, "low", true, "read-only", false}
 	}
 
-	return Verdict{Confirm, "medium", reversibleOrFalse(a.Eval), "write operation needs confirmation", false}
+	return Verdict{Confirm, "medium", reversibleOrFalse(a.Eval), writeReason(a.Display), false}
 }
 
 func evalRisk(e SelfEval) string {

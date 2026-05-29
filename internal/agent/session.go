@@ -29,8 +29,10 @@ type session struct {
 	depth int
 	msgs  []model.Message
 
-	// yolo auto-approves non-danger write actions for this connection, set
-	// via /yolo. Hard danger rules still require confirmation.
+	// yolo auto-approves non-danger actions for this connection. Interactive
+	// sessions enable it by default (see newInteractiveSession); `/yolo off`
+	// turns it off for stricter, per-command confirmation. Hard danger rules
+	// (rm -rf, mkfs, shutdown, …) always prompt regardless.
 	yolo bool
 	// approved holds exact command strings the user approved "always" this
 	// session (the "a" answer to a confirm prompt).
@@ -47,6 +49,17 @@ func (s *session) approveAlways(cmd string) {
 
 func newSession(store *memory.Store, depth int) *session {
 	return &session{store: store, depth: depth}
+}
+
+// newInteractiveSession is the session for a human-driven connection (the
+// local REPL or an SSH client). It auto-runs non-danger actions by default so
+// routine reads and writes don't each need a click; hard danger rules still
+// prompt, and `/yolo off` restores per-command confirmation. Patrol and
+// diagnosis build sessions with newSession directly and stay strict.
+func newInteractiveSession(store *memory.Store, depth int) *session {
+	s := newSession(store, depth)
+	s.yolo = true
+	return s
 }
 
 // sessionBreakMsgs is a synthetic user+assistant pair appended to hydrated
