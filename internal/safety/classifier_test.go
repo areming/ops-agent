@@ -69,6 +69,89 @@ func TestClassifyDangerFlag(t *testing.T) {
 	}
 }
 
+func TestIsReadOnlyCommandFor(t *testing.T) {
+	// The three real environment-probe commands the user ran on Windows.
+	winEnv := `echo === DISK === & wmic logicaldisk get size,freespace,caption,volumename 2>nul & echo. & echo === CPU === & wmic cpu get name,numberofcores,numberoflogicalprocessors /value 2>nul & echo. & echo === GPU === & wmic path win32_videocontroller get name 2>nul & echo. & echo === ENV === & set & echo. & echo === PATH === & echo %PATH%`
+	winTools := `echo === DEV TOOLS === & echo Node: & node --version 2>nul & echo Go: & go version 2>nul & echo Git: & git --version 2>nul & python --version 2>nul & echo. & echo === DOCKER === & docker info 2>nul || echo docker not running/installed`
+	winPorts := `echo === LISTENING PORTS === & netstat -an | findstr LISTENING 2>nul & echo. & dir "E:\Program Files\Microsoft VS Code\bin\code*.cmd" 2>nul & where code 2>nul`
+
+	cases := []struct {
+		name string
+		cmd  string
+		goos string
+		want bool
+	}{
+		// The user's real Windows diagnostics now auto-allow.
+		{"win env probe", winEnv, "windows", true},
+		{"win dev tools probe", winTools, "windows", true},
+		{"win listening ports probe", winPorts, "windows", true},
+
+		// Windows query binaries.
+		{"wmic get", "wmic logicaldisk get size,freespace", "windows", true},
+		{"wmic call uninstall", "wmic product call uninstall", "windows", false},
+		{"wmic delete", "wmic process where name='x' delete", "windows", false},
+		{"ipconfig all", "ipconfig /all", "windows", true},
+		{"ipconfig flushdns", "ipconfig /flushdns", "windows", false},
+		{"ipconfig renew", "ipconfig /renew", "windows", false},
+		{"where", "where code", "windows", true},
+		{"dir with quoted path", `dir "C:\Program Files"`, "windows", true},
+		{"findstr pipe", "netstat -an | findstr LISTENING", "windows", true},
+		{"echo dot blank line", "echo.", "windows", true},
+		{"del is not read-only", "del file.txt", "windows", false},
+		{"rmdir is not read-only", "rmdir /s /q C:\\tmp", "windows", false},
+
+		// `find` deletes on Unix but only searches text on Windows — the platform
+		// gate keeps it out of the read-only set on the wrong OS.
+		{"unix find delete", "find . -name x -delete", "linux", false},
+		{"windows find search", `find "text" file.txt`, "windows", true},
+
+		// Version/help probes auto-allow for any binary.
+		{"node version", "node --version", "windows", true},
+		{"go version subcommand", "go version", "linux", true},
+		{"dotnet version", "dotnet --version", "windows", true},
+		{"git version not git verb", "git --version", "linux", true},
+		{"tool help", "kubectl --help", "linux", true},
+
+		// git/docker read-only subcommands (cross-platform).
+		{"git status", "git status", "linux", true},
+		{"git log", "git log --oneline", "linux", true},
+		{"git push writes", "git push origin main", "linux", false},
+		{"git config writes", "git config user.name x", "linux", false},
+		{"docker info", "docker info", "linux", true},
+		{"docker ps", "docker ps -a", "linux", true},
+		{"docker rm writes", "docker rm container", "linux", false},
+
+		// Benign redirects are stripped; real writes/inputs are not.
+		{"stderr to null", "ps aux 2>/dev/null", "linux", true},
+		{"stderr merge", "ps aux 2>&1", "linux", true},
+		{"redirect to file", "echo hi > /tmp/f", "linux", false},
+		{"append to file", "echo hi >> /tmp/f", "linux", false},
+		{"input redirect", "sort < secrets.txt", "linux", false},
+
+		// Sequencing/and/or of read-only segments is read-only.
+		{"semicolon chain", "ps; ls; df", "linux", true},
+		{"and chain", "ps && ls", "linux", true},
+		{"pipe chain", "ps aux | grep nginx", "linux", true},
+		{"chain with one writer", "ps; rm file", "linux", false},
+
+		// Command substitution is opaque — never auto-allow.
+		{"dollar subst", "echo $(rm -rf /)", "linux", false},
+		{"backtick subst", "echo `whoami`", "linux", false},
+
+		// Empty.
+		{"empty", "", "linux", false},
+		{"only separators", " & & ", "windows", false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isReadOnlyCommandFor(c.cmd, c.goos); got != c.want {
+				t.Errorf("isReadOnlyCommandFor(%q, %q) = %v, want %v", c.cmd, c.goos, got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsPatrolAutoRemedy(t *testing.T) {
 	units := []string{"nginx", "postgresql.service"}
 	cases := []struct {
