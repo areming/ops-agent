@@ -5,8 +5,29 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestBuildUpdateScript(t *testing.T) {
+	s := buildUpdateScript("BIN_SRC=/tmp/ops-x")
+	for _, want := range []string{
+		"BIN_SRC=/tmp/ops-x", // the obtain snippet is embedded verbatim
+		`install -m 0755 "$BIN_SRC" /usr/local/bin/ops`,
+		"ln -sf /usr/local/bin/ops /usr/local/bin/opsagent",
+		"systemctl restart opsagent.service",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("update script missing %q:\n%s", want, s)
+		}
+	}
+	// An update must not re-provision the host like enroll does.
+	for _, forbidden := range []string{"useradd", "visudo", "key set", "[Unit]"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("update script should not re-provision (found %q):\n%s", forbidden, s)
+		}
+	}
+}
 
 func TestReleaseBinAsset(t *testing.T) {
 	cases := []struct{ goos, arch, want string }{

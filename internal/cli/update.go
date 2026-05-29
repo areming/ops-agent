@@ -106,7 +106,7 @@ func maybeOfferUpdate(host, bin string) {
 	if !promptYesNo(fmt.Sprintf("现在更新 %s 到 %s? [Y/n] ", host, latest)) {
 		return
 	}
-	if err := updateRemoteHost(host, bin); err != nil {
+	if err := updateRemoteHost(host, latest); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ 更新失败（跳过，继续用当前版本连接）：%v\n", err)
 		return
 	}
@@ -132,73 +132,43 @@ func RemoteVersion(host, bin string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// updateRemoteHost updates the agent on host, then restarts the service so the
-// new binary goes live (the remote `ops update` only prints a restart hint, it
-// does not restart itself). It prefers the remote self-update over HTTPS; when
-// that fails — most often because the host can't reach GitHub — it falls back
-// to pushing a locally-built binary over SSH, which never touches GitHub.
-func updateRemoteHost(host, bin string) error {
-	if err := remoteSelfUpdate(host, bin); err != nil {
-		fmt.Fprintf(os.Stderr, "远端自更新失败（%v），改用本地二进制推送…\n", err)
-		if err := pushLocalBinary(host); err != nil {
-			return err
-		}
-	}
-	return restartRemoteService(host)
-}
-
-// remoteSelfUpdate runs `ops update` on host over SSH. It needs passwordless
-// sudo (the binary lives in /usr/local/bin, owned by root) — `sudo -n` so a
-// password requirement fails fast instead of hanging.
-func remoteSelfUpdate(host, bin string) error {
-	cmd := exec.Command("ssh", host, "sudo", "-n", bin, "update")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// pushLocalBinary scp's a locally-built linux binary to host and installs it
-// over the existing one (no re-provisioning of user/sudoers/unit — this is an
-// update, not an enroll). Requires a dist/ build; without one it returns an
-// error pointing at build.ps1.
-func pushLocalBinary(host string) error {
+// updateRemoteHost replaces the agent binary on host with `version` and
+// restarts the service. It deliberately does NOT run the remote `ops update`:
+// an old agent may predate that subcommand entirely (it just errors "unknown
+// command"). Instead it obtains the binary the same way enroll does — scp a
+// local dist build if present, otherwise have the host curl the release and
+// verify its sha256 — so the update works regardless of the remote's version.
+func updateRemoteHost(host, version string) error {
 	arch, err := detectArch(host)
 	if err != nil {
 		return err
 	}
-	local, err := localBinary("", arch)
+	obtain, err := obtainStep(host, arch, EnrollOptions{Version: version})
 	if err != nil {
 		return err
 	}
-	if local == "" {
-		return fmt.Errorf("没有本地 dist/ops-linux-%s 可推送；先 ./build.ps1 再重试", arch)
-	}
-	remoteTmp := fmt.Sprintf("/tmp/ops-update-%d", time.Now().UnixNano())
-	fmt.Fprintf(os.Stderr, "→ copying %s to %s:%s\n", local, host, remoteTmp)
-	if err := run("scp", local, host+":"+remoteTmp); err != nil {
-		return fmt.Errorf("copy binary: %w", err)
-	}
-	script := fmt.Sprintf(`set -euo pipefail
-install -m 0755 %[1]s %[2]s
-ln -sf %[2]s %[3]s
-rm -f %[1]s`, remoteTmp, installBinPath, legacyBinPath)
 	cmd := exec.Command("ssh", host, "sudo", "-n", "bash", "-s")
-	cmd.Stdin = strings.NewReader(script)
+	cmd.Stdin = strings.NewReader(buildUpdateScript(obtain))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("install binary (ensure passwordless sudo or root): %w", err)
+		return fmt.Errorf("remote update failed (ensure passwordless sudo or root): %w", err)
 	}
 	return nil
 }
 
-// restartRemoteService restarts the opsagent unit on host so a freshly
-// installed binary takes effect.
-func restartRemoteService(host string) error {
-	cmd := exec.Command("ssh", host, "sudo", "-n", "systemctl", "restart", "opsagent.service")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+// buildUpdateScript returns the root script that installs the agent binary left
+// at $BIN_SRC by obtain (an scp'd path or a curl+verify snippet) over the
+// existing one and restarts the service. Unlike enroll's bootstrap it touches
+// nothing else — no user, sudoers, unit, or key — because this is an update.
+func buildUpdateScript(obtain string) string {
+	return fmt.Sprintf(`set -euo pipefail
+%[1]s
+install -m 0755 "$BIN_SRC" %[2]s
+ln -sf %[2]s %[3]s
+rm -f "$BIN_SRC"
+systemctl restart opsagent.service
+echo "opsagent updated and restarted"`, obtain, installBinPath, legacyBinPath)
 }
 
 // downloadToTemp fetches url into a temporary file and returns its path.
