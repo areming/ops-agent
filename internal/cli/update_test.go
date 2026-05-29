@@ -61,6 +61,46 @@ func TestVerifyFile(t *testing.T) {
 	}
 }
 
+func TestInstallReplace(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "download", "ops.exe")
+	dst := filepath.Join(dir, "install", "ops.exe")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("new binary v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh install (no existing dst).
+	if err := installReplace(src, dst); err != nil {
+		t.Fatalf("installReplace (fresh): %v", err)
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "new binary v2" {
+		t.Fatalf("fresh install dst = %q, want new bytes", got)
+	}
+
+	// Update over an existing dst: it must be replaced, src kept, no .old left.
+	if err := os.WriteFile(src, []byte("new binary v3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installReplace(src, dst); err != nil {
+		t.Fatalf("installReplace (update): %v", err)
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "new binary v3" {
+		t.Fatalf("update dst = %q, want replaced bytes", got)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("src should remain after install, not be consumed: %v", err)
+	}
+	if _, err := os.Stat(dst + ".old"); !os.IsNotExist(err) {
+		t.Errorf("dst.old leftover should be cleaned up after a successful install")
+	}
+}
+
 func TestCopyReplace(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")

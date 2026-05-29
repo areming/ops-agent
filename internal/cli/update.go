@@ -269,6 +269,49 @@ func replaceBinary(target, src string) error {
 	return copyReplace(src, target)
 }
 
+// installReplace places the binary at src into dst without consuming src
+// (unlike replaceBinary, which moves src). It stages a copy in dst's directory,
+// moves any existing dst aside to dst+".old" — a rename succeeds even when the
+// destination cannot be overwritten in place — then renames the staged copy
+// into position. Used by the Windows self-installer, where src is the
+// downloaded exe the user may want to keep, and the old install may be locked.
+func installReplace(src, dst string) error {
+	staged, err := os.CreateTemp(filepath.Dir(dst), ".ops-install-*")
+	if err != nil {
+		return err
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath)
+
+	sf, err := os.Open(src)
+	if err != nil {
+		staged.Close()
+		return err
+	}
+	_, copyErr := io.Copy(staged, sf)
+	sf.Close()
+	staged.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if err := os.Chmod(stagedPath, 0o755); err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(dst); err == nil {
+		old := dst + ".old"
+		_ = os.Remove(old) // clear any leftover from a previous install
+		if err := os.Rename(dst, old); err != nil {
+			return fmt.Errorf("move existing binary aside: %w", err)
+		}
+		defer os.Remove(old) // best-effort cleanup once the new one is in place
+	}
+	if err := os.Rename(stagedPath, dst); err != nil {
+		return fmt.Errorf("place new binary: %w", err)
+	}
+	return nil
+}
+
 // copyReplace copies src to a temp file in the same directory as dst, then
 // renames it into place. Used when src and dst are on different filesystems.
 func copyReplace(src, dst string) error {

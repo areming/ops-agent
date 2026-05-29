@@ -46,7 +46,7 @@ func SelfInstall() error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
-	if err := copyReplace(src, dst); err != nil {
+	if err := installReplace(src, dst); err != nil {
 		return fmt.Errorf("copy binary: %w", err)
 	}
 	fmt.Printf("installed  %s\n", dst)
@@ -63,10 +63,16 @@ func SelfInstall() error {
 	fmt.Println()
 	fmt.Println("done. open a new terminal and run:")
 	fmt.Println("  ops setup")
-	fmt.Println()
-	fmt.Fprint(os.Stderr, "press Enter to close...")
-	bufio.NewReader(os.Stdin).ReadString('\n')
 	return nil
+}
+
+// PauseForUser holds a double-clicked console window open until the user
+// presses Enter, so the install result — success or the failure message — is
+// readable instead of vanishing the instant the process exits. Called by the
+// Windows self-install entrypoint for both outcomes.
+func PauseForUser() {
+	fmt.Fprint(os.Stderr, "\npress Enter to close...")
+	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 // windowsAddToPath appends dir to the current user's PATH in the Windows

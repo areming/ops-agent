@@ -32,8 +32,15 @@ func main() {
 		// On Windows, if the binary is not running from the install location
 		// (e.g. freshly downloaded), treat it as a self-install invocation.
 		if runtime.GOOS == "windows" && !cli.IsInstalledLocation() {
-			if err := cli.SelfInstall(); err != nil {
-				fmt.Fprintf(os.Stderr, "ops: install failed: %v\n", err)
+			err := cli.SelfInstall()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ops: 安装失败: %v\n", err)
+			}
+			// Double-clicked from Explorer, the console closes the instant this
+			// process exits — so hold it open until the user acknowledges,
+			// otherwise both success and the error above vanish in a flash.
+			cli.PauseForUser()
+			if err != nil {
 				os.Exit(1)
 			}
 			return
