@@ -149,7 +149,7 @@ func runKey(args []string) error {
 			return fmt.Errorf("usage: ops key set <name>  (value is read from stdin)")
 		}
 		name := args[1]
-		value, err := readSecret()
+		value, err := readSecret(fmt.Sprintf("密钥 %q 的值", name))
 		if err != nil {
 			return err
 		}
@@ -177,17 +177,30 @@ func runKey(args []string) error {
 }
 
 // readSecret reads the secret value from stdin, trimming a single trailing
-// newline so piping (`echo $KEY | ops key set ...`) works cleanly.
-func readSecret() (string, error) {
+// newline so piping (`echo $KEY | ops key set ...`) works cleanly. what names
+// the value being asked for so the interactive prompt is unambiguous; the EOF
+// key is platform-specific (Ctrl-Z on Windows, Ctrl-D elsewhere) so the hint
+// doesn't tell a PowerShell user to press a key that does nothing.
+func readSecret(what string) (string, error) {
 	info, _ := os.Stdin.Stat()
 	if info.Mode()&os.ModeCharDevice != 0 {
-		fmt.Fprint(os.Stderr, "enter secret value, then EOF (Ctrl-D): ")
+		fmt.Fprintf(os.Stderr, "粘贴%s，然后按 %s 结束输入：", what, eofKeyHint())
 	}
 	b, err := io.ReadAll(bufio.NewReader(os.Stdin))
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimRight(string(b), "\r\n"), nil
+}
+
+// eofKeyHint returns the key combination that signals end-of-input on stdin
+// for the current platform. PowerShell/cmd use Ctrl-Z then Enter; Unix shells
+// use Ctrl-D.
+func eofKeyHint() string {
+	if runtime.GOOS == "windows" {
+		return "Ctrl-Z 回车"
+	}
+	return "Ctrl-D"
 }
 
 // runEnroll deploys the agent to a remote Linux host. The model API key is
@@ -207,7 +220,7 @@ func runEnroll(args []string) error {
 	if len(rest) < 1 {
 		return fmt.Errorf("usage: ops enroll <host> [flags]  (API key read from stdin)")
 	}
-	apiKey, err := readSecret()
+	apiKey, err := readSecret("模型 API key（如 DeepSeek/OpenAI 的密钥）")
 	if err != nil {
 		return err
 	}
