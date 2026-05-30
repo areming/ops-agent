@@ -96,28 +96,41 @@ func archFromUname(uname string) (string, error) {
 }
 
 // obtainStep returns the shell snippet that places the agent binary at
-// $BIN_SRC on the host. It prefers a local binary (explicit --bin or a
-// dist/ build) and scp's it — which works offline; otherwise it has the host
-// fetch the matching release over HTTPS and verify it against the checksum
-// this side fetched, so a tampered binary is rejected before it runs as root.
+// $BIN_SRC on the host. It prefers, in order: a local binary (explicit --bin or
+// a dist/ build) scp'd over; failing that, downloading the release to THIS
+// machine and scp'ing it; and only as a last resort having the host fetch the
+// release itself.
+//
+// The local-download path matters: the machine running the CLI has already
+// proven it can reach GitHub (it just fetched the version and checksum) and the
+// SSH link to the host already works, so routing the binary local→GitHub→scp is
+// far more reliable than asking the host to reach github.com — which on many
+// managed boxes is slow or blackholed and times out mid-transfer. Every path
+// verifies the sha256 the CLI fetched, so a tampered binary is rejected before
+// it is installed and run as root.
 func obtainStep(host, arch string, opts EnrollOptions) (string, error) {
 	local, err := localBinary(opts.BinPath, arch)
 	if err != nil {
 		return "", err
 	}
 	if local != "" {
-		remoteTmp := fmt.Sprintf("/tmp/opsagent-enroll-%d", time.Now().UnixNano())
-		fmt.Fprintf(os.Stderr, "→ copying %s to %s:%s\n", local, host, remoteTmp)
-		if err := run("scp", local, host+":"+remoteTmp); err != nil {
-			return "", fmt.Errorf("copy binary: %w", err)
-		}
-		return "BIN_SRC=" + remoteTmp, nil
+		return scpBinary(host, local)
 	}
 
 	if opts.Version == "" || opts.Version == "dev" {
 		return "", fmt.Errorf("no local binary dist/ops-linux-%s and this is an unversioned build, "+
 			"so it can't fetch a release; run ./build.ps1 first, or use a released ops", arch)
 	}
+
+	// Prefer local download + scp over the working SSH link.
+	if snippet, err := downloadReleaseAndScp(host, arch, opts.Version); err == nil {
+		return snippet, nil
+	} else {
+		fmt.Fprintf(os.Stderr, "→ 本地下载 release 失败（%v），改让远端自行从 github 拉取\n", err)
+	}
+
+	// Last resort: the local machine can't reach GitHub either, so let the host
+	// try. This may time out if the host has no GitHub reachability.
 	sum, err := fetchChecksum(opts.Version, arch)
 	if err != nil {
 		return "", fmt.Errorf("fetch release checksum for %s: %w", opts.Version, err)
@@ -125,6 +138,39 @@ func obtainStep(host, arch string, opts EnrollOptions) (string, error) {
 	url := releaseBinURL(opts.Version, arch)
 	fmt.Fprintf(os.Stderr, "→ %s will fetch %s and verify sha256\n", host, url)
 	return releaseFetchSnippet(url, sum), nil
+}
+
+// scpBinary copies local to a temp path on host (with SSH transport compression,
+// since the Go binary compresses well over a slow link) and returns the snippet
+// pointing $BIN_SRC at it.
+func scpBinary(host, local string) (string, error) {
+	remoteTmp := fmt.Sprintf("/tmp/opsagent-enroll-%d", time.Now().UnixNano())
+	fmt.Fprintf(os.Stderr, "→ copying %s to %s:%s\n", local, host, remoteTmp)
+	if err := run("scp", "-C", local, host+":"+remoteTmp); err != nil {
+		return "", fmt.Errorf("copy binary: %w", err)
+	}
+	return "BIN_SRC=" + remoteTmp, nil
+}
+
+// downloadReleaseAndScp fetches the release binary for version/arch to a local
+// temp file, verifies its sha256 against the published checksum, then scp's it
+// to host. The temp file is removed once copied.
+func downloadReleaseAndScp(host, arch, version string) (string, error) {
+	sum, err := fetchChecksum(version, arch)
+	if err != nil {
+		return "", fmt.Errorf("fetch checksum: %w", err)
+	}
+	url := releaseBinURL(version, arch)
+	fmt.Fprintf(os.Stderr, "→ 本地下载 %s 并校验 sha256...\n", url)
+	tmp, err := downloadToTemp(url)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp)
+	if err := verifyFile(tmp, sum); err != nil {
+		return "", fmt.Errorf("checksum mismatch: %w", err)
+	}
+	return scpBinary(host, tmp)
 }
 
 // releaseFetchSnippet builds the shell that downloads the binary to $BIN_SRC on
