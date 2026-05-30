@@ -9,7 +9,10 @@ $env:CGO_ENABLED = "0"
 $Version = $env:OPS_VERSION
 if (-not $Version) { $Version = (git describe --tags --always 2>$null) }
 if (-not $Version) { $Version = "dev" }
-$ldflags = "-X github.com/areming/ops-agent/internal/version.Value=$Version"
+# -s -w strips the symbol table and DWARF debug info: a smaller binary (~25%)
+# means a faster scp to managed hosts on slow links. Stack traces still carry
+# function names and line numbers, so operational debugging is unaffected.
+$ldflags = "-s -w -X github.com/areming/ops-agent/internal/version.Value=$Version"
 Write-Host "version $Version"
 
 $targets = @(
