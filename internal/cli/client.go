@@ -16,28 +16,136 @@ import (
 	"golang.org/x/term"
 
 	"github.com/areming/ops-agent/internal/transport"
+	"github.com/areming/ops-agent/internal/version"
 )
 
-// printWelcomeBanner prints an ASCII robot banner with version and model info.
-// Called from RunLocal only (bare `ops`), not from connect paths.
-func printWelcomeBanner(provider, model, ver string) {
-	modelLine := provider
-	if model != "" {
-		modelLine += " / " + model
+// --- terminal styling -------------------------------------------------------
+//
+// Output is colored with 24-bit ("truecolor") ANSI escapes, gated on the stream
+// being a real terminal that advertises truecolor (COLORTERM) with NO_COLOR
+// unset — so piped output, the basic 8/16-color consoles common on old target
+// machines, and users who opt out all stay plain. We keep this hand-rolled (a
+// few escapes) rather than pulling in a TUI framework, to honor the project's
+// minimal-dependency, pure-static-binary constraint.
+
+// colorAllowedByEnv reports whether the environment permits ANSI color:
+// NO_COLOR must be unset/empty (https://no-color.org), and the terminal must
+// advertise 24-bit color — via COLORTERM, or via WT_SESSION (Windows Terminal
+// is always truecolor-capable but sets that instead of COLORTERM). Requiring an
+// explicit signal keeps us from emitting truecolor escapes a basic 8/16-color
+// console would mangle.
+func colorAllowedByEnv() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
 	}
+	if ct := os.Getenv("COLORTERM"); ct == "truecolor" || ct == "24bit" {
+		return true
+	}
+	return os.Getenv("WT_SESSION") != ""
+}
+
+// colorEnabled folds the env policy together with the stream being a terminal.
+func colorEnabled(fd uintptr) bool {
+	return colorAllowedByEnv() && term.IsTerminal(int(fd))
+}
+
+var (
+	colorStdout = colorEnabled(os.Stdout.Fd())
+	colorStderr = colorEnabled(os.Stderr.Fd())
+)
+
+// rgb wraps s in a truecolor foreground; a no-op off a terminal.
+func rgb(r, g, b int, s string) string {
+	if !colorStdout {
+		return s
+	}
+	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm%s\x1b[0m", r, g, b, s)
+}
+
+// dimRGB is rgb plus the faint attribute, for secondary text.
+func dimRGB(r, g, b int, s string) string {
+	if !colorStdout {
+		return s
+	}
+	return fmt.Sprintf("\x1b[2;38;2;%d;%d;%dm%s\x1b[0m", r, g, b, s)
+}
+
+// bold wraps s in the bold attribute.
+func bold(s string) string {
+	if !colorStdout {
+		return s
+	}
+	return "\x1b[1m" + s + "\x1b[0m"
+}
+
+// accent is the warm amber the eye should land on (✻, ⏺, /help, ›); muted is
+// the dim gray for labels and hints.
+func accent(s string) string { return rgb(235, 170, 70, s) }
+func muted(s string) string  { return dimRGB(150, 150, 160, s) }
+
+// errLabel paints a short error marker red on stderr (no-op off a terminal).
+func errLabel(s string) string {
+	if !colorStderr {
+		return s
+	}
+	return "\x1b[1;31m" + s + "\x1b[0m"
+}
+
+// gradientRule returns a horizontal rule of n cells fading warm-orange→magenta
+// — the one truecolor flourish under the wordmark. Plain dashes off a terminal.
+func gradientRule(n int) string {
+	if !colorStdout {
+		return strings.Repeat("─", n)
+	}
+	var b strings.Builder
+	for i := range n {
+		t := float64(i) / float64(n-1)
+		r := int(255 - 55*t)
+		g := int(140 - 50*t)
+		bl := int(50 + 150*t)
+		fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%dm─", r, g, bl)
+	}
+	b.WriteString("\x1b[0m")
+	return b.String()
+}
+
+// printLocalBanner is the bare-`ops` welcome: mascot + wordmark + active model.
+func printLocalBanner(provider, model, ver string) {
+	modelVal := provider
+	if model != "" {
+		modelVal = provider + " / " + model
+	}
+	printBanner([2][2]string{{"模型", modelVal}, {"版本", ver}})
+}
+
+// printConnectBanner is the `ops connect` welcome: it shows the host reached
+// instead of a model (the remote model isn't known to the client).
+func printConnectBanner(host, ver string) {
+	printBanner([2][2]string{{"主机", host}, {"版本", ver}})
+}
+
+// printBanner renders the startup banner: a small robot mascot beside the ops
+// wordmark, a gradient rule, two info rows, and the /help hint. The mascot is
+// box-drawing only (no CJK), so it always aligns; info rows are left-aligned
+// with no right border, sidestepping CJK double-width alignment entirely.
+func printBanner(rows [2][2]string) {
+	slate := func(s string) string { return rgb(120, 140, 170, s) }
+	eyes := rgb(120, 200, 200, "● ●")
+
 	fmt.Println()
-	fmt.Println(`  ╭──────────────────────────────────────────────`)
-	fmt.Println(`  │`)
-	fmt.Println(`  │   ╭─────╮   ops — 轻量运维助手`)
-	fmt.Println(`  │   │◉   ◉│`)
-	fmt.Printf("  │   │  ─  │   %s  ·  %s\n", ver, modelLine)
-	fmt.Println(`  │   ╰──┬──╯`)
-	fmt.Println(`  │   ╭──┴──╮   /help 查命令  ·  ^D 退出`)
-	fmt.Println(`  │   │▓▓▓▓▓│`)
-	fmt.Println(`  │   ╰─────╯`)
-	fmt.Println(`  │`)
-	fmt.Println(`  ╰──────────────────────────────────────────────`)
-	fmt.Println()
+	fmt.Printf(" %s\n", muted("╷"))
+	fmt.Printf(" %s  %s %s\n", slate("╭─┴─╮"), accent("✻"), bold("ops"))
+	fmt.Printf(" %s%s%s  %s\n", slate("│"), eyes, slate("│"), muted("轻量运维助手 · 服务器守护机器人"))
+	fmt.Printf(" %s\n", slate("╰───╯"))
+	fmt.Printf(" %s\n", gradientRule(34))
+	for i, row := range rows {
+		val := rgb(205, 205, 210, row[1])
+		if i == 0 {
+			val = rgb(120, 200, 200, row[1]) // the primary row (model / host) pops
+		}
+		fmt.Printf(" %s  %s\n", muted(row[0]), val)
+	}
+	fmt.Printf("\n %s%s\n", accent("/help"), muted(" 查看命令"))
 }
 
 // clearScreen clears the terminal using ANSI escape sequences.
@@ -75,7 +183,7 @@ func ConnectLocal(socketPath string) error {
 		return err
 	}
 	defer nc.Close()
-	fmt.Printf("ops @ local — /help 查命令（^D 退出）\n")
+	printConnectBanner("local", version.Value)
 	return repl(transport.NewConn(nc), "local")
 }
 
@@ -107,7 +215,7 @@ func ConnectSSH(host, remoteSocket, remoteBin string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("ops @ %s — /help 查命令（^D 退出）\n", host)
+	printConnectBanner(host, version.Value)
 	rerr := repl(conn, host)
 	if cerr := cleanup(); rerr == nil {
 		rerr = cerr
@@ -150,8 +258,9 @@ func sshBridge(host, remoteSocket, remoteBin string) (*transport.Conn, func() er
 // prompt so multiple sessions are easy to tell apart.
 func repl(conn *transport.Conn, label string) error {
 	in := bufio.NewScanner(os.Stdin)
+	prompt := fmt.Sprintf("%s %s ", muted("["+label+"]"), accent("›"))
 	for {
-		fmt.Printf("[%s] > ", label)
+		fmt.Printf("\n%s", prompt)
 		if !in.Scan() {
 			return in.Err()
 		}
@@ -180,7 +289,7 @@ func repl(conn *transport.Conn, label string) error {
 }
 
 // handleSlash interprets a /command typed at the prompt. Local-only commands
-// (/help, /quit) are handled here; /models, /logs, /clear and /yolo become
+// (/help, /exit) are handled here; /model, /logs, /clear and /yolo become
 // control frames to the connected agent — so they act on whichever machine the
 // session is talking to (local or remote). quit=true ends the session.
 func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
@@ -196,7 +305,10 @@ func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 	case "clear":
 		clearScreen()
 		return false, sendControl(conn, cmd, arg)
-	case "models", "logs", "yolo":
+	case "models", "model":
+		// /model (singular, like claude) is an alias; the agent control is "models".
+		return false, sendControl(conn, "models", arg)
+	case "logs", "yolo":
 		return false, sendControl(conn, cmd, arg)
 	default:
 		fmt.Printf("未知命令 /%s（试试 /help）\n", cmd)
@@ -225,7 +337,7 @@ func sendControl(conn *transport.Conn, cmd, arg string) error {
 		return err
 	}
 	if reply.Err != "" {
-		fmt.Fprintf(os.Stderr, "[error] %s\n", reply.Err)
+		fmt.Fprintf(os.Stderr, "%s %s\n", errLabel("✗"), reply.Err)
 		return nil
 	}
 	fmt.Println(reply.Text)
@@ -234,12 +346,12 @@ func sendControl(conn *transport.Conn, cmd, arg string) error {
 
 func printSlashHelp() {
 	fmt.Print(`命令：
-  /models [名称]   查看模型；带名称则切换当前会话所连机器的模型
+  /model [名称]    查看模型；带名称则切换当前会话所连机器的模型
   /logs [N]        查看最近 N 条操作日志（默认 20）
   /yolo [on|off]   自动放行（默认开）：开=非危险操作直接执行，关=逐条确认；危险命令始终确认
   /clear           清空当前对话
   /help            显示本帮助
-  /quit            退出
+  /exit            退出
 `)
 }
 
@@ -249,6 +361,7 @@ func printSlashHelp() {
 // instant any frame arrives, and never runs while assistant text is streaming.
 func drain(conn *transport.Conn, in *bufio.Scanner) error {
 	sp := startSpinner("思考中…")
+	replyOpen := false // have we started the assistant's reply block this turn?
 	for {
 		f, err := conn.ReadFrame()
 		sp.stop()
@@ -259,13 +372,19 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 		switch f.Type {
 		case transport.TypeAssistantDelta:
 			s, _ := f.Text()
+			if !replyOpen {
+				fmt.Print("\n") // blank line sets the reply apart from input/tool
+				replyOpen = true
+			}
 			fmt.Print(s)
 		case transport.TypeToolStart:
+			replyOpen = false
 			var p transport.ToolStartPayload
 			_ = f.Decode(&p)
-			fmt.Printf("\n▶ %s: %s\n", p.Tool, p.Command)
+			fmt.Printf("\n%s %s%s\n", accent("⏺"), bold(p.Tool), muted("("+p.Command+")"))
 			sp = startSpinner("执行中…")
 		case transport.TypeConfirmRequest:
+			replyOpen = false
 			var p transport.ConfirmRequestPayload
 			_ = f.Decode(&p)
 			approved, always := askConfirm(in, p)
@@ -279,7 +398,7 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 			}
 		case transport.TypeError:
 			s, _ := f.Text()
-			fmt.Fprintf(os.Stderr, "\n[error] %s\n", s)
+			fmt.Fprintf(os.Stderr, "\n%s %s\n", errLabel("✗ 错误"), s)
 			// keep reading; the turn still ends with Done
 		case transport.TypeDone:
 			fmt.Println()
@@ -324,8 +443,11 @@ var confirmChoices = []confirmChoice{
 // ok is false when raw mode can't be entered, so the caller falls back to the
 // line prompt. A read error, Esc, or Ctrl-C is treated as a denial.
 func askConfirmMenu(fd int, p transport.ConfirmRequestPayload) (approved, always, ok bool) {
-	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  ↑/↓ 选择 · Enter 确认 · Esc 拒绝\n",
-		p.Risk, p.Tool, p.Command, p.Reason)
+	fmt.Printf("\n%s  %s\n  命令: %s\n  原因: %s\n  %s\n",
+		rgb(235, 180, 60, "⚠ 需要确认"),
+		muted("risk="+p.Risk+" · "+p.Tool),
+		bold(p.Command), p.Reason,
+		muted("↑/↓ 选择 · Enter 确认 · Esc 拒绝"))
 
 	old, err := term.MakeRaw(fd)
 	if err != nil {
@@ -337,11 +459,11 @@ func askConfirmMenu(fd int, p transport.ConfirmRequestPayload) (approved, always
 	sel := 0
 	render := func() {
 		for i, c := range confirmChoices {
-			marker := "  "
+			marker, label := "  ", c.label
 			if i == sel {
-				marker = "❯ "
+				marker, label = accent("❯")+" ", bold(c.label)
 			}
-			fmt.Printf("\r\x1b[K%s%s  %s\r\n", marker, c.label, c.desc)
+			fmt.Printf("\r\x1b[K%s%s  %s\r\n", marker, label, muted(c.desc))
 		}
 	}
 	render()
@@ -393,8 +515,10 @@ func askConfirmMenu(fd int, p transport.ConfirmRequestPayload) (approved, always
 // approves and auto-allows this exact command for the session. EOF or anything
 // else is a denial.
 func askConfirmLine(in *bufio.Scanner, p transport.ConfirmRequestPayload) (approved, always bool) {
-	fmt.Printf("\n⚠ 需要确认 [risk=%s] %s\n  命令: %s\n  原因: %s\n  执行? [y=本次 / a=本会话始终 / N=拒绝] ",
-		p.Risk, p.Tool, p.Command, p.Reason)
+	fmt.Printf("\n%s  %s\n  命令: %s\n  原因: %s\n  执行? [y=本次 / a=本会话始终 / N=拒绝] ",
+		rgb(235, 180, 60, "⚠ 需要确认"),
+		muted("risk="+p.Risk+" · "+p.Tool),
+		bold(p.Command), p.Reason)
 	if !in.Scan() {
 		return false, false
 	}

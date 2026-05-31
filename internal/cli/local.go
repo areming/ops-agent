@@ -22,7 +22,7 @@ func RunLocal() error {
 	}
 
 	cfg := config.Load()
-	printWelcomeBanner(cfg.Provider, cfg.Model, version.Value)
+	printLocalBanner(cfg.Provider, cfg.Model, version.Value)
 
 	client, server := net.Pipe()
 	errc := make(chan error, 1)
