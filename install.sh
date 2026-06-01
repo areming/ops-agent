@@ -11,8 +11,8 @@ set -eu
 REPO="areming/ops-agent"
 VERSION="${OPS_VERSION:-}"
 
-log() { printf '\033[0;36m[ops]\033[0m %s\n' "$1"; }
-err() { printf '\033[0;31m[ops] 错误:\033[0m %s\n' "$1" >&2; exit 1; }
+log() { printf '\033[0;36m[ops %s]\033[0m %s\n' "$(date '+%H:%M:%S')" "$1"; }
+err() { printf '\033[0;31m[ops %s 错误:]\033[0m %s\n' "$(date '+%H:%M:%S')" "$1" >&2; exit 1; }
 
 # 需要 root：写 /usr/local/bin 与（必要时）apt 装 curl。
 if [ "$(id -u)" -ne 0 ]; then
@@ -28,21 +28,42 @@ esac
 
 # 2) 下载器：优先 curl，其次 wget，都没有就装 curl
 if command -v curl >/dev/null 2>&1; then
-	dl() { curl -fsSL -o "$1" "$2"; }
-	get() { curl -fsSL "$1"; }
+	dl()     { curl -fsSL -o "$1" "$2"; }       # 静默，用于 API / 校验文件
+	dl_bin() { curl -fL --progress-bar -o "$1" "$2"; }  # 进度条，用于二进制
+	get()    { curl -fsSL "$1"; }
 elif command -v wget >/dev/null 2>&1; then
-	dl() { wget -qO "$1" "$2"; }
-	get() { wget -qO- "$1"; }
+	dl()     { wget -qO "$1" "$2"; }
+	dl_bin() { wget -O "$1" "$2" 2>&1; }        # wget 默认显示进度
+	get()    { wget -qO- "$1"; }
 else
 	log "未找到 curl/wget，尝试用 apt 安装 curl…"
 	if command -v apt-get >/dev/null 2>&1; then
 		apt-get update -qq && apt-get install -y -qq curl || err "安装 curl 失败"
-		dl() { curl -fsSL -o "$1" "$2"; }
-		get() { curl -fsSL "$1"; }
+		dl()     { curl -fsSL -o "$1" "$2"; }
+		dl_bin() { curl -fL --progress-bar -o "$1" "$2"; }
+		get()    { curl -fsSL "$1"; }
 	else
 		err "缺少 curl/wget，且无 apt-get 可自动安装，请手动安装后重试"
 	fi
 fi
+
+# retry <desc> <cmd...> — 最多 3 次，失败间隔 2/4 秒
+retry() {
+	_desc="$1"; shift
+	_i=1
+	while [ "$_i" -le 3 ]; do
+		if "$@"; then
+			return 0
+		fi
+		if [ "$_i" -lt 3 ]; then
+			_wait=$((_i * 2))
+			log "$_desc 失败，${_wait}s 后重试（$_i/3）…"
+			sleep "$_wait"
+		fi
+		_i=$((_i + 1))
+	done
+	return 1
+}
 
 # 3) 校验工具
 command -v sha256sum >/dev/null 2>&1 || err "缺少 sha256sum（coreutils），请先安装"
@@ -60,9 +81,12 @@ log "安装 $VERSION（$ARCH）"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 BASE="https://github.com/$REPO/releases/download/$VERSION"
+
 log "下载二进制…"
-dl "$TMP/ops" "$BASE/ops-linux-$ARCH" || err "下载二进制失败"
-dl "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" || err "下载校验文件失败"
+retry "下载二进制" dl_bin "$TMP/ops" "$BASE/ops-linux-$ARCH" || err "下载二进制失败（已重试 3 次）"
+
+log "下载校验文件…"
+retry "下载校验文件" dl "$TMP/SHA256SUMS" "$BASE/SHA256SUMS" || err "下载校验文件失败（已重试 3 次）"
 
 expect=$(grep "ops-linux-$ARCH" "$TMP/SHA256SUMS" | awk '{print $1}')
 actual=$(sha256sum "$TMP/ops" | awk '{print $1}')
