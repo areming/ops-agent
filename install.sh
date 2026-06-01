@@ -47,6 +47,33 @@ else
 	fi
 fi
 
+# 3) 网络检测
+# 独立函数，不依赖 get()，5s 超时做 HEAD 检查
+_net_check() {
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsS --max-time 5 -o /dev/null -I "$1" 2>/dev/null
+	else
+		wget -q --spider --timeout=5 "$1" 2>/dev/null
+	fi
+}
+_net_row() {
+	_label="$1"; _url="$2"
+	printf '  %-32s' "$_label"
+	if _net_check "$_url"; then
+		printf '\033[0;32m✓ 可达\033[0m\n'
+		return 0
+	else
+		printf '\033[0;33m✗ 不可达\033[0m\n'
+		return 1
+	fi
+}
+log "检测网络连通性…"
+_api_ok=0; _cdn_ok=0
+_net_row "api.github.com（版本查询）"   "https://api.github.com"  && _api_ok=1 || true
+_net_row "github.com（release 下载）"   "https://github.com"      && _cdn_ok=1 || true
+[ "$_api_ok" -eq 0 ] && [ -z "$VERSION" ] && err "无法访问 api.github.com，请检查网络后重试"
+[ "$_cdn_ok" -eq 0 ] && log "警告：github.com 不可达，下载步骤可能失败；若有代理请先配置 https_proxy"
+
 # retry <desc> <cmd...> — 最多 3 次，失败间隔 2/4 秒
 retry() {
 	_desc="$1"; shift
@@ -65,10 +92,10 @@ retry() {
 	return 1
 }
 
-# 3) 校验工具
+# 4) 校验工具
 command -v sha256sum >/dev/null 2>&1 || err "缺少 sha256sum（coreutils），请先安装"
 
-# 4) 解析版本（未指定则取最新 release）
+# 5) 解析版本（未指定则取最新 release）
 if [ -z "$VERSION" ]; then
 	log "查询最新版本…"
 	VERSION=$(get "https://api.github.com/repos/$REPO/releases/latest" |
@@ -77,7 +104,7 @@ if [ -z "$VERSION" ]; then
 fi
 log "安装 $VERSION（$ARCH）"
 
-# 5) 下载 + 校验（临时目录，退出即清理）
+# 6) 下载 + 校验（临时目录，退出即清理）
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 BASE="https://github.com/$REPO/releases/download/$VERSION"
@@ -94,7 +121,7 @@ actual=$(sha256sum "$TMP/ops" | awk '{print $1}')
 [ "$expect" = "$actual" ] || err "校验失败（期望 $expect，实得 $actual）——已中止，未安装"
 log "sha256 校验通过"
 
-# 6) 安装
+# 7) 安装
 install -m 0755 "$TMP/ops" /usr/local/bin/ops
 log "已安装 -> /usr/local/bin/ops（$(/usr/local/bin/ops version)）"
 
