@@ -6,10 +6,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/areming/ops-agent/main/install.sh | sudo sh
 # 指定版本（默认装最新 release）：
 #   curl -fsSL .../install.sh | sudo OPS_VERSION=v0.0.1 sh
+# 本地包（跳过下载，直接安装已有二进制）：
+#   sudo OPS_BIN=/path/to/ops-linux-amd64 sh install.sh
 set -eu
 
 REPO="areming/ops-agent"
 VERSION="${OPS_VERSION:-}"
+OPS_BIN="${OPS_BIN:-}"
 
 log() { printf '\033[0;36m[ops %s]\033[0m %s\n' "$(date '+%H:%M:%S')" "$1"; }
 err() { printf '\033[0;31m[ops %s 错误:]\033[0m %s\n' "$(date '+%H:%M:%S')" "$1" >&2; exit 1; }
@@ -25,6 +28,25 @@ case "$(uname -m)" in
 	aarch64 | arm64) ARCH=arm64 ;;
 	*) err "不支持的架构 $(uname -m)（仅提供 amd64/arm64）" ;;
 esac
+
+# 本地包模式：跳过网络相关步骤，直接进入安装
+if [ -n "$OPS_BIN" ]; then
+	[ -f "$OPS_BIN" ] || err "OPS_BIN 指定的文件不存在：$OPS_BIN"
+	log "本地包模式：$OPS_BIN（跳过下载和 sha256 校验）"
+	TMP=$(mktemp -d)
+	trap 'rm -rf "$TMP"' EXIT
+	cp "$OPS_BIN" "$TMP/ops"
+	install -m 0755 "$TMP/ops" /usr/local/bin/ops
+	log "已安装 -> /usr/local/bin/ops（$(/usr/local/bin/ops version)）"
+	cat <<'EOF'
+
+完成。现在运行：
+    ops
+首次会引导你选择模型 provider 并填入 API key，随后进入对话。
+（这是单机本地模式：不需要 systemd，配置与密钥存在当前用户的 ~/.config 下。）
+EOF
+	exit 0
+fi
 
 # 2) 下载器：优先 curl，其次 wget，都没有就装 curl
 if command -v curl >/dev/null 2>&1; then
