@@ -7,15 +7,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// prodStateDir is where a Linux service install keeps its state. enroll
-// provisions it owned by the dedicated opsagent user.
-const prodStateDir = "/var/lib/opsagent"
 
 type Config struct {
 	Provider string // openai | deepseek | anthropic
@@ -168,12 +164,11 @@ func loadPatrol() PatrolConfig {
 	}
 }
 
-// defaultStateDir is the fixed service path on Linux (where the agent runs
-// as a system service) and a per-user dir elsewhere for development.
+// defaultStateDir returns a per-user config directory. The system service
+// always sets OPSAGENT_STATE_DIR=/var/lib/opsagent explicitly (via the
+// systemd unit), so the fallback here is only reached by regular users
+// running ops directly — they must not share the service-owned path.
 func defaultStateDir() string {
-	if runtime.GOOS == "linux" {
-		return prodStateDir
-	}
 	if dir, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(dir, "opsagent")
 	}
