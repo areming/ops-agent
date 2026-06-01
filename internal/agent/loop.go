@@ -13,9 +13,14 @@ import (
 	"github.com/areming/ops-agent/internal/transport"
 )
 
-// maxToolRounds caps the model<->tool cycle so a misbehaving model can't
-// loop forever.
-const maxToolRounds = 25
+const (
+	// maxToolRounds is the checkpoint interval: a progress note is emitted
+	// every N rounds but the loop keeps running automatically.
+	maxToolRounds = 80
+	// maxToolRoundsHard is the absolute safety cap; only a misbehaving model
+	// should reach this.
+	maxToolRoundsHard = 400
+)
 
 // engine is the reusable model<->tool loop: it streams a model reply, runs
 // tool calls through the safety gate, and feeds results back until the
@@ -55,7 +60,7 @@ type interaction interface {
 func (e *engine) runTurn(ctx context.Context, prov model.Provider, system string, ia interaction, sess *session) error {
 	modelTools := toModelTools(e.reg)
 
-	for range maxToolRounds {
+	for round := range maxToolRoundsHard {
 		ch, err := prov.StreamChat(ctx, model.ChatRequest{
 			System:   system,
 			Messages: sess.msgs,
@@ -95,9 +100,17 @@ func (e *engine) runTurn(ctx context.Context, prov model.Provider, system string
 			result := e.execute(ctx, ia, call)
 			sess.addToolResult(ctx, call.ID, result)
 		}
+
+		// Emit a checkpoint note every maxToolRounds so the user can see
+		// progress, but keep running without requiring any input.
+		if (round+1)%maxToolRounds == 0 {
+			if derr := ia.onDelta(fmt.Sprintf("\n[已调用 %d 轮工具，继续执行…]\n", round+1)); derr != nil {
+				return derr
+			}
+		}
 	}
 
-	ia.onError(fmt.Sprintf("stopped after %d tool rounds", maxToolRounds))
+	ia.onError(fmt.Sprintf("已达工具调用硬上限（%d 轮），任务强制终止。", maxToolRoundsHard))
 	return nil
 }
 

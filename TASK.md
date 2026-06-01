@@ -2,13 +2,13 @@
 
 > 唯一执行事实来源。设计见 REQUIREMENTS / TECH_STACK / ARCHITECTURE / ROADMAP（这些只讲设计，不记执行状态）。
 > 图例：✅ 完成并验证 ｜ 🟡 代码完成待验证/待提交 ｜ ⬜ 未开始
-> 最后更新：2026-05-27
+> 最后更新：2026-05-31
 
 ---
 
 ## 下次会话从哪开始
 
-**M7 代码已全部提交**（`05c4699`→`32dbb57`）。新增 Linux 一键安装脚本（`install.sh`）和 README 安装章节。下一步：push M7 + live 验收（4 项见 M7 收尾）。其中 connect 自举安装需先打 tag 触发 release workflow 出包才能 live 验。
+**M7 代码已提交并推送 `main`**，已发 `v0.0.9`（2026-05-31，含 M7 后续 CLI 体验打磨：欢迎页 truecolor + 机器人吉祥物、对话样式、`/exit`·`/model` 对齐 claude）。下一步：M7 live 验收（4 项见 M7 收尾，release 包已就绪）。
 
 ---
 
@@ -171,8 +171,9 @@ M5 已做（巡检 + 自愈）：
 
 #### 收尾
 - [x] git commit（各步已提交，见上方 commit 列表）
-- [ ] push M7
-- [ ] live 验收：①干净机 `ops`→引导→对话；②会话内 `/models` 切换重启仍生效、`/logs`、`/clear`；③干净机 `ops connect <host>`→确认→拉 release 装→进对话（需先打 tag 出 release）；④老机重 enroll 后 `opsagent` 软链可用
+- [x] push M7（已推送 main）
+- [x] release `v0.0.9`（2026-05-31）：含 M7 后续 CLI 体验打磨（欢迎页机器人吉祥物 + truecolor、对话样式 `⏺` 标记+留白、`/exit`·`/model` 对齐 claude、`NO_COLOR`/`COLORTERM`/`WT_SESSION` 上色 gate，零新依赖）。release workflow 出包就绪
+- [ ] live 验收：①干净机 `ops`→引导→对话；②会话内 `/models` 切换重启仍生效、`/logs`、`/clear`；③干净机 `ops connect <host>`→确认→拉 release 装→进对话（v0.0.9 已出包）；④老机重 enroll 后 `opsagent` 软链可用
 
 ### 跨里程碑待办
 - [ ] M0 SSH 路径 live 验收（需你那台 Linux 机器）——将随 M4 enroll/connect live 验收一并跑通
