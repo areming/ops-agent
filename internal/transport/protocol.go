@@ -30,6 +30,13 @@ const (
 	// the turn's context and closes it with the usual Done frame. It carries no
 	// payload and is ignored when no turn is running.
 	TypeCancel FrameType = "cancel" // cli->agent
+
+	// TypeToolOutput streams a chunk of a running command's combined
+	// stdout/stderr to the CLI for live display, so a long step (e.g. an image
+	// build) shows progress instead of a frozen-looking cursor. Display only:
+	// the model still receives the full result separately. Payload is a JSON
+	// string (the raw output chunk).
+	TypeToolOutput FrameType = "tool_output" // agent->cli, display only
 )
 
 // ControlRequestPayload carries a slash command and its optional argument

@@ -338,6 +338,8 @@ func (*patrolInteraction) onToolStart(tool, command string) {
 	log.Printf("patrol diagnosis: ▶ %s: %s", tool, command)
 }
 
+func (*patrolInteraction) onToolOutput(string) {} // no human watching; discarded
+
 func (*patrolInteraction) onError(msg string) {
 	log.Printf("patrol diagnosis: %s", msg)
 }

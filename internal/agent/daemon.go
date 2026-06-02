@@ -454,6 +454,12 @@ func (c *connInteraction) onToolStart(tool, command string) {
 	}
 }
 
+func (c *connInteraction) onToolOutput(chunk string) {
+	if of, err := transport.TextFrame(transport.TypeToolOutput, chunk); err == nil {
+		_ = c.conn.WriteFrame(of)
+	}
+}
+
 func (c *connInteraction) onError(msg string) { writeError(c.conn, msg) }
 
 func (c *connInteraction) confirm(tool, command string, v safety.Verdict) (bool, error) {

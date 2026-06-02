@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,15 +73,38 @@ func (Shell) Execute(ctx context.Context, args json.RawMessage) (Result, error) 
 		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
 	}
 
-	out, err := cmd.CombinedOutput()
+	// Tee the command's output: every write is both captured (for the model)
+	// and forwarded to the live sink (for the user) as it happens. Pointing
+	// both Stdout and Stderr at the same writer makes exec use a single pipe, so
+	// the combined output stays ordered and the writer is never called
+	// concurrently.
+	w := &teeWriter{sink: outputSink(ctx)}
+	cmd.Stdout = w
+	cmd.Stderr = w
+
+	err := cmd.Run()
 	if cmd.ProcessState == nil {
 		// The process never started (e.g. no shell available).
 		return Result{}, err
 	}
 	return Result{
-		Output:   truncate(string(out), maxOutputBytes),
+		Output:   truncate(w.buf.String(), maxOutputBytes),
 		ExitCode: cmd.ProcessState.ExitCode(),
 	}, nil
+}
+
+// teeWriter captures a command's output while streaming each chunk to an
+// optional live sink. A nil sink makes it a plain capturing buffer.
+type teeWriter struct {
+	sink OutputFunc
+	buf  bytes.Buffer
+}
+
+func (w *teeWriter) Write(p []byte) (int, error) {
+	if w.sink != nil {
+		w.sink(p)
+	}
+	return w.buf.Write(p)
 }
 
 func truncate(s string, max int) string {

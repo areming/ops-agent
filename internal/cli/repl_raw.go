@@ -87,6 +87,13 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 			sp = nil
 		}
 	}
+	var live *liveOutput
+	finishLive := func() {
+		if live != nil {
+			live.finish()
+			live = nil
+		}
+	}
 	replyOpen := false
 	canceling := false
 	for {
@@ -100,6 +107,7 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 				_ = conn.WriteFrame(transport.Frame{Type: transport.TypeCancel})
 				canceling = true
 				stopSp()
+				finishLive()
 				fmt.Fprintf(out, "\n%s\n", muted("⎋ 正在取消…"))
 			}
 		case fe, ok := <-frames:
@@ -115,6 +123,7 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 				if canceling {
 					continue
 				}
+				finishLive()
 				s, _ := f.Text()
 				if !replyOpen {
 					fmt.Fprint(out, "\n")
@@ -125,12 +134,25 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 				if canceling {
 					continue
 				}
+				finishLive()
 				replyOpen = false
 				var p transport.ToolStartPayload
 				_ = f.Decode(&p)
 				fmt.Fprintf(out, "\n%s %s%s\n", accent("⏺"), bold(p.Tool), muted("("+p.Command+")"))
 				sp = startSpinner("执行中…")
+			case transport.TypeToolOutput:
+				if canceling {
+					continue
+				}
+				replyOpen = false
+				if live == nil {
+					cols, rows, _ := term.GetSize(int(os.Stdout.Fd()))
+					live = newLiveOutput(out, true, cols, rows)
+				}
+				s, _ := f.Text()
+				live.feed([]byte(s))
 			case transport.TypeConfirmRequest:
+				finishLive()
 				replyOpen = false
 				var approved, always bool
 				if !canceling {
@@ -147,9 +169,11 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 					return err
 				}
 			case transport.TypeError:
+				finishLive()
 				s, _ := f.Text()
 				fmt.Fprintf(out, "\n%s %s\n", errLabel("✗ 错误"), s)
 			case transport.TypeDone:
+				finishLive()
 				fmt.Fprint(out, "\n")
 				return nil
 			}

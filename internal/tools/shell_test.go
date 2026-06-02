@@ -41,6 +41,43 @@ func TestShellExecuteSuccess(t *testing.T) {
 	}
 }
 
+func TestShellExecuteStreamsOutput(t *testing.T) {
+	// A multi-line command's output should reach the sink as it is produced,
+	// and the final Result must still hold the full combined output. `echo`
+	// chained with `&&` works under both sh -c and cmd /c.
+	var streamed strings.Builder
+	sink := func(p []byte) { streamed.Write(p) }
+	ctx := WithOutputSink(context.Background(), sink)
+
+	res, err := Shell{}.Execute(ctx, json.RawMessage(`{"command":"echo a && echo b && echo c"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", res.ExitCode)
+	}
+	for _, want := range []string{"a", "b", "c"} {
+		if !strings.Contains(streamed.String(), want) {
+			t.Errorf("sink did not receive %q; got %q", want, streamed.String())
+		}
+		if !strings.Contains(res.Output, want) {
+			t.Errorf("Result.Output missing %q; got %q", want, res.Output)
+		}
+	}
+}
+
+func TestShellExecuteNoSink(t *testing.T) {
+	// With no sink installed (e.g. patrol's path), streaming is simply skipped
+	// and the command still runs and reports its output.
+	res, err := Shell{}.Execute(context.Background(), json.RawMessage(`{"command":"echo hi"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(res.Output, "hi") {
+		t.Errorf("Output = %q, want it to contain %q", res.Output, "hi")
+	}
+}
+
 func TestShellExecuteNonZeroExit(t *testing.T) {
 	// `exit 3` is understood by both sh and cmd. A non-zero exit is a
 	// normal result, not a Go error.

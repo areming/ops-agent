@@ -378,6 +378,13 @@ func printSlashHelpTo(w io.Writer) {
 // instant any frame arrives, and never runs while assistant text is streaming.
 func drain(conn *transport.Conn, in *bufio.Scanner) error {
 	sp := startSpinner("思考中…")
+	var live *liveOutput
+	finishLive := func() {
+		if live != nil {
+			live.finish()
+			live = nil
+		}
+	}
 	replyOpen := false // have we started the assistant's reply block this turn?
 	for {
 		f, err := conn.ReadFrame()
@@ -388,6 +395,7 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 		}
 		switch f.Type {
 		case transport.TypeAssistantDelta:
+			finishLive()
 			s, _ := f.Text()
 			if !replyOpen {
 				fmt.Print("\n") // blank line sets the reply apart from input/tool
@@ -395,12 +403,22 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 			}
 			fmt.Print(s)
 		case transport.TypeToolStart:
+			finishLive()
 			replyOpen = false
 			var p transport.ToolStartPayload
 			_ = f.Decode(&p)
 			fmt.Printf("\n%s %s%s\n", accent("⏺"), bold(p.Tool), muted("("+p.Command+")"))
 			sp = startSpinner("执行中…")
+		case transport.TypeToolOutput:
+			replyOpen = false
+			if live == nil {
+				// Cooked path: no cursor tricks, just stream lines as they arrive.
+				live = newLiveOutput(os.Stdout, false, 0, 0)
+			}
+			s, _ := f.Text()
+			live.feed([]byte(s))
 		case transport.TypeConfirmRequest:
+			finishLive()
 			replyOpen = false
 			var p transport.ConfirmRequestPayload
 			_ = f.Decode(&p)
@@ -414,10 +432,12 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 				return err
 			}
 		case transport.TypeError:
+			finishLive()
 			s, _ := f.Text()
 			fmt.Fprintf(os.Stderr, "\n%s %s\n", errLabel("✗ 错误"), s)
 			// keep reading; the turn still ends with Done
 		case transport.TypeDone:
+			finishLive()
 			fmt.Println()
 			return nil
 		}

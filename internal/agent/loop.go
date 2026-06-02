@@ -43,6 +43,9 @@ type interaction interface {
 	onDelta(text string) error
 	// onToolStart announces a tool about to run; best-effort.
 	onToolStart(tool, command string)
+	// onToolOutput streams a chunk of a running tool's live output as it is
+	// produced; best-effort, display only.
+	onToolOutput(chunk string)
 	// onError surfaces a recoverable error; best-effort.
 	onError(msg string)
 	// confirm reports whether a Confirm-verdict action may run.
@@ -168,7 +171,10 @@ func (e *engine) execute(ctx context.Context, ia interaction, call model.ToolCal
 
 	ia.onToolStart(tool.Name(), display)
 
-	res, err := tool.Execute(ctx, call.Arguments)
+	// Install a sink so the tool can stream its output to the user live; the
+	// chunk slice is only valid during the call, so copy it into a string.
+	runCtx := tools.WithOutputSink(ctx, func(chunk []byte) { ia.onToolOutput(string(chunk)) })
+	res, err := tool.Execute(runCtx, call.Arguments)
 	if err != nil {
 		if !tool.ReadOnly() {
 			audit(ctx, e.store, ia.source(), display, verdict, decision, -1, err.Error())
