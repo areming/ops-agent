@@ -64,8 +64,12 @@ func TestReopenStillDecrypts(t *testing.T) {
 func TestListNamesNotValues(t *testing.T) {
 	store, master := paths(t)
 	ks, _ := Open(store, master)
-	_ = ks.Set("beta", "v2")
-	_ = ks.Set("alpha", "v1")
+	// Distinctive multi-char values: a 2-char value like "v1" can appear by
+	// chance in the base64 ciphertext, so the substring check below would flag
+	// encrypted data as a false leak (~7% of runs).
+	const valAlpha, valBeta = "alpha-plaintext-A1", "beta-plaintext-B2"
+	_ = ks.Set("beta", valBeta)
+	_ = ks.Set("alpha", valAlpha)
 
 	names := ks.List()
 	if len(names) != 2 || names[0] != "alpha" || names[1] != "beta" {
@@ -77,7 +81,7 @@ func TestListNamesNotValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read store: %v", err)
 	}
-	if strings.Contains(string(raw), "v1") || strings.Contains(string(raw), "v2") {
+	if strings.Contains(string(raw), valAlpha) || strings.Contains(string(raw), valBeta) {
 		t.Errorf("plaintext value found in store file: %s", raw)
 	}
 }
