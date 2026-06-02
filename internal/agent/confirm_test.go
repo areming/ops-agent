@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -16,9 +17,11 @@ func connPair(t *testing.T) (agentConn, clientConn *transport.Conn) {
 	return transport.NewConn(a), transport.NewConn(c)
 }
 
-// answerConfirm reads exactly one confirm request on conn and sends reply,
-// returning a channel that closes once it has answered.
-func answerConfirm(t *testing.T, conn *transport.Conn, reply transport.ConfirmReplyPayload) <-chan struct{} {
+// answerConfirm reads exactly one confirm request off the client conn (which
+// also unblocks the agent's synchronous pipe write) and then delivers reply on
+// replyCh, mirroring chatTurn's demux. It returns a channel that closes once it
+// has answered.
+func answerConfirm(t *testing.T, conn *transport.Conn, replyCh chan<- transport.ConfirmReplyPayload, reply transport.ConfirmReplyPayload) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -31,16 +34,16 @@ func answerConfirm(t *testing.T, conn *transport.Conn, reply transport.ConfirmRe
 			t.Errorf("expected confirm request, got %s", f.Type)
 			return
 		}
-		rf, err := transport.PayloadFrame(transport.TypeConfirmReply, reply)
-		if err != nil {
-			t.Errorf("build reply: %v", err)
-			return
-		}
-		if err := conn.WriteFrame(rf); err != nil {
-			t.Errorf("write reply: %v", err)
-		}
+		replyCh <- reply
 	}()
 	return done
+}
+
+// newPromptInteraction wires a connInteraction the way chatTurn does: a buffered
+// reply channel fed by the demux and an uncanceled turn context.
+func newPromptInteraction(conn *transport.Conn, sess *session) (*connInteraction, chan transport.ConfirmReplyPayload) {
+	replyCh := make(chan transport.ConfirmReplyPayload, 1)
+	return &connInteraction{conn: conn, sess: sess, replyCh: replyCh, ctx: context.Background()}, replyCh
 }
 
 // A successful return without any goroutine answering the wire proves the path
@@ -64,9 +67,9 @@ func TestConfirmYoloStillPromptsDanger(t *testing.T) {
 	agentConn, clientConn := connPair(t)
 	sess := newSession(nil, 0)
 	sess.yolo = true
-	ia := &connInteraction{conn: agentConn, sess: sess}
+	ia, replyCh := newPromptInteraction(agentConn, sess)
 
-	done := answerConfirm(t, clientConn, transport.ConfirmReplyPayload{Approved: false})
+	done := answerConfirm(t, clientConn, replyCh, transport.ConfirmReplyPayload{Approved: false})
 	ok, err := ia.confirm("shell", "rm -rf /data", safety.Verdict{Decision: safety.Confirm, Danger: true})
 	if err != nil {
 		t.Fatalf("confirm err: %v", err)
@@ -97,9 +100,9 @@ func TestInteractiveSessionAutoApprovesNonDanger(t *testing.T) {
 func TestInteractiveSessionStillPromptsDanger(t *testing.T) {
 	agentConn, clientConn := connPair(t)
 	sess := newInteractiveSession(nil, 0)
-	ia := &connInteraction{conn: agentConn, sess: sess}
+	ia, replyCh := newPromptInteraction(agentConn, sess)
 
-	done := answerConfirm(t, clientConn, transport.ConfirmReplyPayload{Approved: false})
+	done := answerConfirm(t, clientConn, replyCh, transport.ConfirmReplyPayload{Approved: false})
 	ok, err := ia.confirm("shell", "rm -rf /data", safety.Verdict{Decision: safety.Confirm, Danger: true})
 	if err != nil {
 		t.Fatalf("confirm err: %v", err)
@@ -113,9 +116,9 @@ func TestInteractiveSessionStillPromptsDanger(t *testing.T) {
 func TestConfirmAlwaysCachesForSession(t *testing.T) {
 	agentConn, clientConn := connPair(t)
 	sess := newSession(nil, 0)
-	ia := &connInteraction{conn: agentConn, sess: sess}
+	ia, replyCh := newPromptInteraction(agentConn, sess)
 
-	done := answerConfirm(t, clientConn, transport.ConfirmReplyPayload{Approved: true, Always: true})
+	done := answerConfirm(t, clientConn, replyCh, transport.ConfirmReplyPayload{Approved: true, Always: true})
 	ok, err := ia.confirm("shell", "systemctl restart nginx", safety.Verdict{Decision: safety.Confirm})
 	if err != nil || !ok {
 		t.Fatalf("first confirm: ok=%v err=%v", ok, err)
@@ -133,9 +136,9 @@ func TestConfirmAlwaysCachesForSession(t *testing.T) {
 func TestConfirmAlwaysNotCachedForDanger(t *testing.T) {
 	agentConn, clientConn := connPair(t)
 	sess := newSession(nil, 0)
-	ia := &connInteraction{conn: agentConn, sess: sess}
+	ia, replyCh := newPromptInteraction(agentConn, sess)
 
-	done := answerConfirm(t, clientConn, transport.ConfirmReplyPayload{Approved: true, Always: true})
+	done := answerConfirm(t, clientConn, replyCh, transport.ConfirmReplyPayload{Approved: true, Always: true})
 	ok, err := ia.confirm("shell", "rm -rf /data", safety.Verdict{Decision: safety.Confirm, Danger: true})
 	if err != nil || !ok {
 		t.Fatalf("confirm: ok=%v err=%v", ok, err)

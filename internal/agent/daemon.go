@@ -175,14 +175,34 @@ func (srv *server) handle(nc net.Conn) {
 	if err := sess.hydrate(ctx); err != nil {
 		log.Printf("load history: %v", err)
 	}
-	for {
-		f, err := conn.ReadFrame()
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				log.Printf("read frame: %v", err)
+
+	// One goroutine owns every frame read for the connection's life. A running
+	// turn must watch for a Cancel frame while it streams, and a second reader
+	// on the same Conn would race this loop; instead all frames flow through
+	// `frames`, consumed by this loop between turns and by chatTurn during one.
+	// `quit` lets the reader exit if it is parked on a send when handle returns.
+	frames := make(chan transport.Frame)
+	quit := make(chan struct{})
+	defer close(quit)
+	go func() {
+		defer close(frames)
+		for {
+			f, err := conn.ReadFrame()
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					log.Printf("read frame: %v", err)
+				}
+				return
 			}
-			return
+			select {
+			case frames <- f:
+			case <-quit:
+				return
+			}
 		}
+	}()
+
+	for f := range frames {
 		switch f.Type {
 		case transport.TypeUserInput:
 			text, err := f.Text()
@@ -191,7 +211,7 @@ func (srv *server) handle(nc net.Conn) {
 				continue
 			}
 			sess.addUser(ctx, text)
-			if err := srv.chatTurn(ctx, conn, sess); err != nil {
+			if err := srv.chatTurn(ctx, conn, sess, frames); err != nil {
 				log.Printf("turn: %v", err)
 				return
 			}
@@ -200,6 +220,9 @@ func (srv *server) handle(nc net.Conn) {
 				log.Printf("control: %v", err)
 				return
 			}
+		case transport.TypeConfirmReply, transport.TypeCancel:
+			// A turn-scoped frame that arrived just as the turn ended (e.g. a
+			// late Cancel). No turn is running now, so there is nothing to do.
 		default:
 			writeError(conn, "unexpected frame type: "+string(f.Type))
 		}
@@ -338,12 +361,57 @@ func errString(err error) string {
 }
 
 // chatTurn runs one turn for a CLI connection and closes it with a Done
-// frame. It returns an error only when the connection can no longer be
-// written, ending the session.
-func (srv *server) chatTurn(ctx context.Context, conn *transport.Conn, sess *session) error {
-	ia := &connInteraction{conn: conn, store: srv.store, sess: sess}
-	if err := srv.eng.runTurn(ctx, srv.provider(), srv.systemPrompt, ia, sess); err != nil {
-		return err
+// frame. It runs under a cancelable child context: a watcher goroutine drains
+// turn-scoped frames off `frames` for the turn's duration — a Cancel frame
+// cancels the context (stopping the model stream and any running command), and
+// a ConfirmReply is handed to the confirm handshake. The watcher is torn down
+// before chatTurn returns so the handle loop reclaims `frames`. It returns an
+// error only when the connection can no longer be written, ending the session.
+func (srv *server) chatTurn(ctx context.Context, conn *transport.Conn, sess *session, frames <-chan transport.Frame) error {
+	turnCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	replyCh := make(chan transport.ConfirmReplyPayload, 1)
+	stop := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		for {
+			select {
+			case <-stop:
+				return
+			case f, ok := <-frames:
+				if !ok {
+					cancel() // connection closed mid-turn
+					return
+				}
+				switch f.Type {
+				case transport.TypeCancel:
+					cancel()
+				case transport.TypeConfirmReply:
+					var p transport.ConfirmReplyPayload
+					if err := f.Decode(&p); err == nil {
+						select {
+						case replyCh <- p:
+						default:
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	ia := &connInteraction{conn: conn, store: srv.store, sess: sess, replyCh: replyCh, ctx: turnCtx}
+	runErr := srv.eng.runTurn(turnCtx, srv.provider(), srv.systemPrompt, ia, sess)
+
+	// Stop the watcher before returning. The client never sends the next
+	// UserInput until it sees Done (below), so no input frame can be in flight
+	// here; at worst the watcher consumes a late Cancel, which is harmless.
+	close(stop)
+	<-watchDone
+
+	if runErr != nil {
+		return runErr
 	}
 	return conn.WriteFrame(transport.Frame{Type: transport.TypeDone})
 }
@@ -360,6 +428,11 @@ type connInteraction struct {
 	conn  *transport.Conn
 	store *memory.Store
 	sess  *session
+	// replyCh delivers the user's confirm decision, demuxed off the connection
+	// by chatTurn's watcher. ctx is the turn context; its cancellation aborts a
+	// pending confirm so an ESC during a prompt stops the turn.
+	replyCh <-chan transport.ConfirmReplyPayload
+	ctx     context.Context
 }
 
 func (connInteraction) source() string { return "chat" }
@@ -390,14 +463,29 @@ func (c *connInteraction) confirm(tool, command string, v safety.Verdict) (bool,
 			return true, nil
 		}
 	}
-	approved, always, err := confirm(c.conn, tool, command, v)
+	req, err := transport.PayloadFrame(transport.TypeConfirmRequest, transport.ConfirmRequestPayload{
+		Tool:    tool,
+		Command: command,
+		Risk:    v.Risk,
+		Reason:  v.Reason,
+	})
 	if err != nil {
 		return false, err
 	}
-	if approved && always && !v.Danger {
-		c.sess.approveAlways(command)
+	if err := c.conn.WriteFrame(req); err != nil {
+		return false, err
 	}
-	return approved, nil
+	select {
+	case <-c.ctx.Done():
+		// Canceled while waiting on the user. Report it as an error so the turn
+		// stops cleanly instead of recording a false denial for this command.
+		return false, c.ctx.Err()
+	case reply := <-c.replyCh:
+		if reply.Approved && reply.Always && !v.Danger {
+			c.sess.approveAlways(command)
+		}
+		return reply.Approved, nil
+	}
 }
 
 func (c *connInteraction) declineRun(ctx context.Context, command string, v safety.Verdict) string {

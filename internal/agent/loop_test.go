@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/areming/ops-agent/internal/memory"
 	"github.com/areming/ops-agent/internal/model"
+	"github.com/areming/ops-agent/internal/safety"
 	"github.com/areming/ops-agent/internal/tools"
 	"github.com/areming/ops-agent/internal/transport"
 )
@@ -68,6 +70,7 @@ func runScenario(t *testing.T, approve bool) (executed bool, finalText string, a
 	reg := tools.NewRegistry(stubTool{executed: &executed})
 
 	c1, c2 := net.Pipe()
+	t.Cleanup(func() { c1.Close(); c2.Close() })
 	agentSide := transport.NewConn(c1)
 	clientSide := transport.NewConn(c2)
 
@@ -75,8 +78,22 @@ func runScenario(t *testing.T, approve bool) (executed bool, finalText string, a
 	sess := newSession(store, 0)
 	sess.addUser(context.Background(), "do it")
 
+	// Mirror handle's single reader: forward every agent-side frame onto a
+	// channel for chatTurn to demux (ConfirmReply / Cancel).
+	frames := make(chan transport.Frame)
+	go func() {
+		defer close(frames)
+		for {
+			f, err := agentSide.ReadFrame()
+			if err != nil {
+				return
+			}
+			frames <- f
+		}
+	}()
+
 	errc := make(chan error, 1)
-	go func() { errc <- srv.chatTurn(context.Background(), agentSide, sess) }()
+	go func() { errc <- srv.chatTurn(context.Background(), agentSide, sess, frames) }()
 
 	var text strings.Builder
 loop:
@@ -132,5 +149,115 @@ func TestRunTurnDeny(t *testing.T) {
 	}
 	if rows != 1 { // denial is still audited
 		t.Errorf("audit rows = %d, want 1", rows)
+	}
+}
+
+// blockingProvider streams `first` then parks until the context is canceled, so
+// a test can interrupt a turn that is still mid-stream. canceled closes once the
+// stream observed the cancellation, proving ESC actually stopped the model.
+type blockingProvider struct {
+	first    string
+	canceled chan struct{}
+}
+
+func (*blockingProvider) Name() string  { return "blocking" }
+func (*blockingProvider) Model() string { return "blocking" }
+func (p *blockingProvider) StreamChat(ctx context.Context, _ model.ChatRequest) (<-chan model.ChatEvent, error) {
+	ch := make(chan model.ChatEvent)
+	go func() {
+		defer close(ch)
+		ch <- model.ChatEvent{Type: model.EventTextDelta, Text: p.first}
+		<-ctx.Done()
+		close(p.canceled)
+	}()
+	return ch, nil
+}
+
+// A Cancel frame mid-stream must stop the model, close the turn with Done, and
+// leave the transcript ending on an assistant message so the next turn is valid.
+func TestChatTurnCancelDuringStream(t *testing.T) {
+	store, err := memory.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	prov := &blockingProvider{first: "thinking…", canceled: make(chan struct{})}
+
+	c1, c2 := net.Pipe()
+	t.Cleanup(func() { c1.Close(); c2.Close() })
+	agentSide := transport.NewConn(c1)
+	clientSide := transport.NewConn(c2)
+
+	srv := &server{prov: prov, eng: &engine{reg: tools.NewRegistry(), store: store}, store: store, systemPrompt: baseSystemPrompt}
+	sess := newSession(store, 0)
+	sess.addUser(context.Background(), "hi")
+
+	frames := make(chan transport.Frame)
+	go func() {
+		defer close(frames)
+		for {
+			f, err := agentSide.ReadFrame()
+			if err != nil {
+				return
+			}
+			frames <- f
+		}
+	}()
+
+	errc := make(chan error, 1)
+	go func() { errc <- srv.chatTurn(context.Background(), agentSide, sess, frames) }()
+
+loop:
+	for {
+		f, ferr := clientSide.ReadFrame()
+		if ferr != nil {
+			t.Fatalf("client read: %v", ferr)
+		}
+		switch f.Type {
+		case transport.TypeAssistantDelta:
+			// Got the first token; interrupt the turn.
+			if werr := clientSide.WriteFrame(transport.Frame{Type: transport.TypeCancel}); werr != nil {
+				t.Fatalf("send cancel: %v", werr)
+			}
+		case transport.TypeDone:
+			break loop
+		}
+	}
+	if err := <-errc; err != nil {
+		t.Fatalf("chatTurn: %v", err)
+	}
+
+	select {
+	case <-prov.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("model stream was not canceled")
+	}
+
+	if n := len(sess.msgs); n == 0 || sess.msgs[n-1].Role != model.RoleAssistant {
+		t.Fatalf("transcript must end on an assistant message, got %+v", sess.msgs)
+	}
+}
+
+// A write that ran (e.g. a command the cancel killed) must still be audited even
+// though the turn's context is already canceled.
+func TestAuditSurvivesCanceledContext(t *testing.T) {
+	store, err := memory.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled, as during an interrupted turn
+
+	audit(ctx, store, "chat", "rm -rf /tmp/x", safety.Verdict{Risk: "high"}, "approved", -1, "killed")
+
+	rows, err := store.CountAudit(context.Background())
+	if err != nil {
+		t.Fatalf("count audit: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("killed write was not audited under canceled ctx: rows=%d", rows)
 	}
 }

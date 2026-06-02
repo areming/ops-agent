@@ -24,6 +24,12 @@ const (
 	// (no Done frame). Used for /models, /logs, /clear.
 	TypeControlRequest FrameType = "control_request" // cli->agent
 	TypeControlReply   FrameType = "control_reply"   // agent->cli
+
+	// TypeCancel interrupts the turn in progress. The CLI sends it (ESC /
+	// Ctrl-C) while the agent is streaming or running tools; the agent cancels
+	// the turn's context and closes it with the usual Done frame. It carries no
+	// payload and is ignored when no turn is running.
+	TypeCancel FrameType = "cancel" // cli->agent
 )
 
 // ControlRequestPayload carries a slash command and its optional argument

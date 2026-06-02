@@ -197,7 +197,11 @@ type Classifier interface {
 
 // 传输帧
 type Frame struct {
-    Type    FrameType // UserInput|AssistantDelta|ToolCall|ConfirmRequest|ConfirmReply|Done|Error
+    // UserInput|AssistantDelta|ToolStart|ConfirmRequest|ConfirmReply|
+    // ControlRequest|ControlReply|Cancel|Done|Error
+    // Cancel（cli→agent，ESC/Ctrl-C）中断运行中的一轮：取消该轮 ctx，停模型流、
+    // kill 正在跑的命令，仍以 Done 收尾。
+    Type    FrameType
     Payload json.RawMessage
 }
 ```

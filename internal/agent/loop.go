@@ -10,7 +10,6 @@ import (
 	"github.com/areming/ops-agent/internal/model"
 	"github.com/areming/ops-agent/internal/safety"
 	"github.com/areming/ops-agent/internal/tools"
-	"github.com/areming/ops-agent/internal/transport"
 )
 
 const (
@@ -61,12 +60,18 @@ func (e *engine) runTurn(ctx context.Context, prov model.Provider, system string
 	modelTools := toModelTools(e.reg)
 
 	for round := range maxToolRoundsHard {
+		if ctx.Err() != nil {
+			return nil // canceled between rounds
+		}
 		ch, err := prov.StreamChat(ctx, model.ChatRequest{
 			System:   system,
 			Messages: sess.msgs,
 			Tools:    modelTools,
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil // stream aborted by cancel
+			}
 			ia.onError(err.Error())
 			return nil
 		}
@@ -90,6 +95,14 @@ func (e *engine) runTurn(ctx context.Context, prov model.Provider, system string
 			}
 		}
 
+		if ctx.Err() != nil {
+			// Canceled mid-stream. Persist the partial reply (or a marker) so the
+			// transcript stays a valid user->assistant alternation, and stop
+			// without dispatching any tool calls that streamed in.
+			sess.addAssistant(ctx, canceledText(text.String()), reasoning.String())
+			return nil
+		}
+
 		if len(calls) == 0 {
 			sess.addAssistant(ctx, text.String(), reasoning.String())
 			return nil
@@ -97,8 +110,17 @@ func (e *engine) runTurn(ctx context.Context, prov model.Provider, system string
 
 		sess.addAssistantWithCalls(ctx, text.String(), reasoning.String(), calls)
 		for _, call := range calls {
+			// Every declared call must get a result to keep the transcript valid;
+			// once canceled, record a marker instead of running the rest.
+			if ctx.Err() != nil {
+				sess.addToolResult(ctx, call.ID, "[已取消]")
+				continue
+			}
 			result := e.execute(ctx, ia, call)
 			sess.addToolResult(ctx, call.ID, result)
+		}
+		if ctx.Err() != nil {
+			return nil // canceled during tool execution; results recorded above
 		}
 
 		// Emit a checkpoint note every maxToolRounds so the user can see
@@ -159,40 +181,24 @@ func (e *engine) execute(ctx context.Context, ia interaction, call model.ToolCal
 	return formatResult(res)
 }
 
-// confirm runs the request/reply handshake over a CLI connection. always
-// reports whether the user asked to auto-approve this command for the session.
-func confirm(conn *transport.Conn, tool, command string, v safety.Verdict) (approved, always bool, err error) {
-	req, err := transport.PayloadFrame(transport.TypeConfirmRequest, transport.ConfirmRequestPayload{
-		Tool:    tool,
-		Command: command,
-		Risk:    v.Risk,
-		Reason:  v.Reason,
-	})
-	if err != nil {
-		return false, false, err
+// canceledText keeps a canceled turn's transcript valid: an empty assistant
+// message can be rejected when replayed to the model, so substitute a marker
+// when nothing streamed before the cancel.
+func canceledText(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "[已取消]"
 	}
-	if err := conn.WriteFrame(req); err != nil {
-		return false, false, err
-	}
-	f, err := conn.ReadFrame()
-	if err != nil {
-		return false, false, err
-	}
-	if f.Type != transport.TypeConfirmReply {
-		return false, false, fmt.Errorf("expected confirm reply, got %s", f.Type)
-	}
-	var reply transport.ConfirmReplyPayload
-	if err := f.Decode(&reply); err != nil {
-		return false, false, err
-	}
-	return reply.Approved, reply.Always, nil
+	return s
 }
 
 func audit(ctx context.Context, store *memory.Store, source, command string, v safety.Verdict, decision string, exitCode int, output string) {
 	if store == nil {
 		return
 	}
-	_ = store.InsertAudit(ctx, memory.AuditEntry{
+	// Detach from the turn context: a write that actually happened (including a
+	// command the cancel just killed) must still be audited, even though the
+	// turn's context is now canceled.
+	_ = store.InsertAudit(context.WithoutCancel(ctx), memory.AuditEntry{
 		Source:     source,
 		Command:    command,
 		Risk:       v.Risk,

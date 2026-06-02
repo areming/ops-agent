@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -252,11 +253,25 @@ func sshBridge(host, remoteSocket, remoteBin string) (*transport.Conn, func() er
 	return transport.NewConnRW(stdout, stdin), cleanup, nil
 }
 
-// repl reads a line, sends it as UserInput, then handles the streamed
+// repl drives one interactive session. On a real terminal it runs the raw-mode
+// loop (replRaw), which adds ESC/Ctrl-C interruption of a running turn; piped or
+// non-TTY sessions (automation, SSH without a tty, tests) fall back to the
+// line-based loop, which has no key watching but identical conversation flow.
+func repl(conn *transport.Conn, label string) error {
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		if err := replRaw(conn, label); !errors.Is(err, errRawUnavailable) {
+			return err
+		}
+		// Couldn't enter raw mode; fall through to the line-based loop.
+	}
+	return replCooked(conn, label)
+}
+
+// replCooked reads a line, sends it as UserInput, then handles the streamed
 // reply (text, tool activity, confirmations) until Done. EOF on stdin
 // ends the session. label identifies the connected host in the banner and
 // prompt so multiple sessions are easy to tell apart.
-func repl(conn *transport.Conn, label string) error {
+func replCooked(conn *transport.Conn, label string) error {
 	in := bufio.NewScanner(os.Stdin)
 	prompt := fmt.Sprintf("%s %s ", muted("["+label+"]"), accent("›"))
 	for {
@@ -344,8 +359,10 @@ func sendControl(conn *transport.Conn, cmd, arg string) error {
 	return nil
 }
 
-func printSlashHelp() {
-	fmt.Print(`命令：
+func printSlashHelp() { printSlashHelpTo(os.Stdout) }
+
+func printSlashHelpTo(w io.Writer) {
+	fmt.Fprint(w, `命令：
   /model [名称]    查看模型；带名称则切换当前会话所连机器的模型
   /logs [N]        查看最近 N 条操作日志（默认 20）
   /yolo [on|off]   自动放行（默认开）：开=非危险操作直接执行，关=逐条确认；危险命令始终确认
