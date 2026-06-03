@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/areming/ops-agent/internal/version"
-	"golang.org/x/term"
 )
 
 // Setup walks the operator through deploying the agent to one host: it
@@ -17,7 +16,7 @@ import (
 // (with fix hints), runs enroll, and verifies the service started. It only
 // drives the existing pieces; no deployment logic lives here.
 func Setup() error {
-	fmt.Print("ops setup — 引导部署到一台 Linux 服务器。\n\n")
+	wizardTitle("引导部署", "把 ops 部署到一台 Linux 服务器")
 	r := bufio.NewReader(os.Stdin)
 	host, err := prompt(r, "目标主机 (ssh host)", "")
 	if err != nil {
@@ -32,22 +31,14 @@ func Setup() error {
 // SetupHost runs the deploy wizard for an already-known host. It is used when
 // `connect <host>` finds the agent is not installed there yet.
 func SetupHost(host string) error {
-	fmt.Printf("引导部署 ops 到 %s。\n\n", host)
+	wizardTitle("引导部署", "把 ops 部署到 "+host)
 	return setupHost(bufio.NewReader(os.Stdin), host)
 }
 
 // setupHost collects model settings and the API key, checks SSH/sudo, then
 // enrolls the host and verifies the service started.
 func setupHost(r *bufio.Reader, host string) error {
-	provider, err := promptProvider(r)
-	if err != nil {
-		return err
-	}
-	modelName, err := prompt(r, "模型名", defaultModel(provider))
-	if err != nil {
-		return err
-	}
-	baseURL, err := prompt(r, "自定义 base URL（回车跳过）", "")
+	entry, modelName, baseURL, err := collectModel(r)
 	if err != nil {
 		return err
 	}
@@ -68,7 +59,7 @@ func setupHost(r *bufio.Reader, host string) error {
 		return err
 	}
 
-	apiKey, err := promptSecret(r, "粘贴 API key（不回显）")
+	apiKey, err := promptAPIKey(r)
 	if err != nil {
 		return err
 	}
@@ -76,7 +67,7 @@ func setupHost(r *bufio.Reader, host string) error {
 		return fmt.Errorf("空 key，已取消")
 	}
 
-	fmt.Print("\n" + setupSummary(host, user, provider, modelName, baseURL, services, diagModel))
+	fmt.Print("\n" + setupSummary(host, user, entry.Label, modelName, baseURL, services, diagModel))
 	confirm, err := prompt(r, "确认部署? [Y/n]", "Y")
 	if err != nil {
 		return err
@@ -87,7 +78,7 @@ func setupHost(r *bufio.Reader, host string) error {
 
 	if err := Enroll(host, EnrollOptions{
 		User:      user,
-		Provider:  provider,
+		Provider:  entry.Adapter,
 		Model:     modelName,
 		BaseURL:   baseURL,
 		APIKey:    apiKey,
@@ -156,23 +147,6 @@ func sshCheck(host, remoteCmd string) error {
 	return cmd.Run()
 }
 
-// promptProvider asks for the model provider, accepting either the menu
-// number or the name.
-func promptProvider(r *bufio.Reader) (string, error) {
-	for {
-		fmt.Println("选择模型 provider:")
-		fmt.Println("  [1] deepseek   [2] openai   [3] anthropic")
-		choice, err := prompt(r, "选择", "1")
-		if err != nil {
-			return "", err
-		}
-		if p, ok := normalizeProvider(choice); ok {
-			return p, nil
-		}
-		fmt.Println("  无效选择，请输入 1/2/3 或 provider 名。")
-	}
-}
-
 // prompt prints label (with an optional default) and reads one line; an
 // empty line returns def.
 func prompt(r *bufio.Reader, label, def string) (string, error) {
@@ -190,51 +164,6 @@ func prompt(r *bufio.Reader, label, def string) (string, error) {
 		return def, nil
 	}
 	return line, nil
-}
-
-// promptSecret reads a secret without echoing on a terminal, falling back to
-// a plain line read when stdin is not a terminal (e.g. piped input). It
-// reads the terminal directly; the assumption is interactive line input, so
-// the bufio reader used for other prompts holds no buffered bytes here.
-func promptSecret(r *bufio.Reader, label string) (string, error) {
-	fd := int(os.Stdin.Fd())
-	if term.IsTerminal(fd) {
-		fmt.Print(label + ": ")
-		b, err := term.ReadPassword(fd)
-		fmt.Println()
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(b)), nil
-	}
-	return prompt(r, label, "")
-}
-
-// normalizeProvider maps a menu choice or name to a canonical provider.
-func normalizeProvider(in string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(in)) {
-	case "1", "deepseek":
-		return "deepseek", true
-	case "2", "openai", "openai-compatible":
-		return "openai", true
-	case "3", "anthropic", "claude":
-		return "anthropic", true
-	}
-	return "", false
-}
-
-// defaultModel suggests a model for the chosen provider; the user can
-// override it at the prompt.
-func defaultModel(provider string) string {
-	switch provider {
-	case "deepseek":
-		return "deepseek-chat"
-	case "openai":
-		return "gpt-4o"
-	case "anthropic":
-		return "claude-sonnet-4-6"
-	}
-	return ""
 }
 
 func isYes(s string) bool {

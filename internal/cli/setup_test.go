@@ -5,30 +5,6 @@ import (
 	"testing"
 )
 
-func TestNormalizeProvider(t *testing.T) {
-	cases := map[string]struct {
-		want string
-		ok   bool
-	}{
-		"1":          {"deepseek", true},
-		"deepseek":   {"deepseek", true},
-		"2":          {"openai", true},
-		"OpenAI":     {"openai", true},
-		"3":          {"anthropic", true},
-		"claude":     {"anthropic", true},
-		" anthropic": {"anthropic", true},
-		"4":          {"", false},
-		"":           {"", false},
-		"gemini":     {"", false},
-	}
-	for in, want := range cases {
-		got, ok := normalizeProvider(in)
-		if got != want.want || ok != want.ok {
-			t.Errorf("normalizeProvider(%q) = (%q, %v), want (%q, %v)", in, got, ok, want.want, want.ok)
-		}
-	}
-}
-
 func TestDefaultModel(t *testing.T) {
 	for provider, want := range map[string]string{
 		"deepseek":  "deepseek-chat",

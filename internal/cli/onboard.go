@@ -18,22 +18,14 @@ const localKeySecretName = "api_key"
 // and persists the model selection to config.json. After it returns,
 // config.Load reflects the choices, so RunLocal can start the conversation.
 func onboardLocal() error {
-	fmt.Print("ops 还没配置模型，先设置一下（本地，仅这台机）。\n\n")
+	wizardTitle("配置模型", "ops 还没配置模型，先设置一下（本地，仅这台机）")
 	r := bufio.NewReader(os.Stdin)
 
-	provider, err := promptProvider(r)
+	entry, modelName, baseURL, err := collectModel(r)
 	if err != nil {
 		return err
 	}
-	modelName, err := prompt(r, "模型名", defaultModel(provider))
-	if err != nil {
-		return err
-	}
-	baseURL, err := prompt(r, "自定义 base URL（回车跳过）", "")
-	if err != nil {
-		return err
-	}
-	apiKey, err := promptSecret(r, "粘贴 API key（不回显）")
+	apiKey, err := promptAPIKey(r)
 	if err != nil {
 		return err
 	}
@@ -41,7 +33,7 @@ func onboardLocal() error {
 		return fmt.Errorf("空 key，已取消")
 	}
 
-	if err := persistLocalConfig(provider, modelName, baseURL, apiKey); err != nil {
+	if err := persistLocalConfig(entry.Adapter, modelName, baseURL, apiKey); err != nil {
 		return err
 	}
 
