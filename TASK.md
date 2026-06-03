@@ -2,13 +2,13 @@
 
 > 唯一执行事实来源。设计见 REQUIREMENTS / TECH_STACK / ARCHITECTURE / ROADMAP（这些只讲设计，不记执行状态）。
 > 图例：✅ 完成并验证 ｜ 🟡 代码完成待验证/待提交 ｜ ⬜ 未开始
-> 最后更新：2026-05-31
+> 最后更新：2026-06-03
 
 ---
 
 ## 下次会话从哪开始
 
-**M7 代码已提交并推送 `main`**，已发 `v0.0.9`（2026-05-31，含 M7 后续 CLI 体验打磨：欢迎页 truecolor + 机器人吉祥物、对话样式、`/exit`·`/model` 对齐 claude）。下一步：M7 live 验收（4 项见 M7 收尾，release 包已就绪）。
+**CLI 引导重构 + 文档纠错已提交 `main`（`1b72ea1` 起）**：onboarding 与部署向导统一成上下键菜单，新增 provider 目录（13 家 + 自定义，base URL/在售模型预填），API key 改掩码回显（露头尾）；同批校正了 README / ONBOARDING / ARCHITECTURE / TECH_STACK / ROADMAP / RUNBOOK 的命名与设计漂移（详见决策日志 2026-06-03）。发 `v0.0.13`。下一步：真机走一遍引导确认渲染，按需补 live 验收。
 
 ---
 
@@ -244,3 +244,6 @@ M5 已做（巡检 + 自愈）：
 - **2026-05-26 M7 `/models` 语义（已定）**：切换作用于「当前对话所在的那台 agent」——本地会话切本地、SSH 会话切远程那台。实现为发给当前 agent 的控制帧，agent 重建自身 provider + 落盘自身 config.json。本地与远程一份代码（本地走 `net.Pipe()` 内存管道复用同一 Conn/REPL）。
 - **2026-05-26 M7 自举安装（已定）**：库公开→匿名 curl，release 地址硬编码默认（零配置，仅镜像例外才进配置）。版本编译进二进制→`connect` 新机装「同本机版本」，不问版本。下载远程自取为主、本地下载+scp 兜底（无外网）。**必做 SHA256 校验**（网络来的二进制要当 root 跑，供应链面）。本轮仅「没装就装」；升级走后续手动 `ops update`（复用 `release.go`）。
 - **2026-05-25 M6-D 引导向导（已定）**：用户反馈手动多步部署「有点小复杂」，加 `opsagent setup` 交互向导降低首用门槛。范围只做向导（安装维持本地 build.ps1，不引 GitHub Releases/安装脚本），入口显式子命令（不抢无参 usage 行为）。隐藏 key 输入引 `golang.org/x/term`（第 3 个第三方依赖，已批准；纯 Go、与 x/crypto 同源、`CGO_ENABLED=0` 交叉编译仍 statically linked 已核对）。向导不重写部署，复用 `cli.Enroll`；前置检查 ssh+`sudo -n` 失败给修复提示并可重试。
+- **2026-06-03 CLI 引导重构（已做，提交 `1b72ea1`）**：onboardLocal 与部署向导统一成 claude 风格上下键菜单（复用会话内确认菜单的 raw-mode 渲染），非 TTY 回退编号选择。新增 `internal/cli/wizard.go` provider 目录：DeepSeek/OpenAI/Anthropic/Moonshot/Qwen/z.ai/Doubao/Gemini/xAI/Groq/Mistral/OpenRouter/SiliconFlow + 自定义，base URL 与在售模型列表按 2026-06 官方现状预填；模型列表末尾留 Custom 手填。第三方 OpenAI 兼容商统一存 `provider=openai + baseURL`，**不动** `model.New`/config schema（代价：banner/`/model` 显示 adapter 名而非品牌，靠模型名区分）。API key 改掩码回显（`maskSecret` 露头尾、中间打码）。移除 `normalizeProvider/promptProvider/promptSecret/defaultModel`（迁入 wizard.go 并目录化）；M6-D 的 `normalizeProvider` 单测随之换成 `lookupProvider/maskSecret/目录校验`。
+- **2026-06-03 文档纠错（已做）**：按代码/历史校正说明文档的命名与设计漂移——命令名 `opsagent`→`ops`（`cmd/ops`、`dist/ops-*`；服务用户/单元/`OPSAGENT_*` 等基础设施名保留）、配置 TOML→JSON（`StateDir/config.json`）、keystore `age`→仅 NaCl secretbox、终端 UI bubbletea→自写 raw-mode REPL（未引框架）、SSH 实为委托系统 `ssh`/`scp`（非 `x/crypto/ssh`）、本地配置目录 `~/.config/opsagent`（RUNBOOK 原写成 `ops-agent`，已修）。涉及 README(.en)/ONBOARDING/ARCHITECTURE/TECH_STACK/ROADMAP/RUNBOOK。设计文档里被取代的草案（ARCHITECTURE §3.3 TOML 示例、§8 拍板项、TECH_STACK 选型表）保留原文并加「已更正/实际落地」注，不改写历史/理由。
+- **2026-06-03 发版 v0.0.13（已发）**：含上述 CLI 引导重构 + 文档纠错。tag 推送触发 `.github/workflows/release.yml` 出 linux-amd64/arm64 + windows-amd64 + SHA256SUMS。

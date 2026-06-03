@@ -29,16 +29,16 @@
 - **语言**：Go（建议 1.22+）。
 - **构建**：`CGO_ENABLED=0` 纯静态编译，`GOOS/GOARCH` 交叉编译，产出**单个静态二进制**，无外部运行时依赖。
 - **一个二进制，多子命令**：
-  - `opsagent serve` —— 在被管服务器上以常驻 agent 运行。
-  - `opsagent connect <host>` / `opsagent chat` —— 本地 CLI，连到某台 agent 对话。
-  - （其余如 `init`、`enroll`、`logs` 等留阶段 3 细化。）
+  - `ops serve` —— 在被管服务器上以常驻 agent 运行。
+  - `ops connect <host>` —— 本地 CLI，连到某台 agent 对话。
+  - （其余如 `setup`、`enroll`、`run`、`logs`、`todos` 等。）
 - **部署方式**：scp 一个二进制 + 一条命令启动（或配 systemd unit）。契合"部署简单"。
 
 ---
 
 ## 2. CLI ↔ agent 通信：复用 SSH 隧道
 
-- **决策**：CLI 通过你已有的 SSH 连接，在远端拉起/连接 `opsagent serve` 的本地 socket，走 SSH stdio 通信。**agent 不监听任何对外网络端口。**
+- **决策**：CLI 通过你已有的 SSH 连接，在远端拉起/连接 `ops serve` 的本地 socket，走 SSH stdio 通信。**agent 不监听任何对外网络端口。**
 - **为什么**：部署最简单（无端口/证书/防火墙）、攻击面最小、复用 SSH 既有认证与连接审计。
 - **代价**：流式输出走 SSH stdio 需少量工程处理；依赖 SSH 可达。
 - **可逆性**：协议层做抽象，未来若要常驻服务端口，可替换为 gRPC+mTLS 或 HTTPS+token，不影响上层。
@@ -74,6 +74,7 @@
 
 - **决策（默认，可调）**：用 `charmbracelet/bubbletea` + `lipgloss` 做对标 claude code 的流式终端 UI。
   - 若想首版更省事，可先做 readline 风格 REPL，后续再升级 TUI——不影响架构。
+  - **实际落地**：选了后者并保持——自写 raw-mode REPL（truecolor + 流式 + ↑/↓ 菜单），**未引** bubbletea/lipgloss，守住零额外依赖。
 
 ---
 
@@ -99,6 +100,8 @@
 | key 加密 | NaCl secretbox 或 age | 待阶段 3 定 |
 | 配置 | YAML 或 TOML | 待阶段 3 定 |
 
+> **实际落地（上表「待定」项的最终选择）**：终端 UI = 自写 raw-mode REPL（**未引** bubbletea/lipgloss）；SSH = 委托系统 `ssh`/`scp` 命令（**非** `x/crypto/ssh` 库）；CLI = 标准库 `flag`（非 cobra）；key 加密 = NaCl secretbox（非 age）；配置 = JSON `config.json` + 环境变量（非 YAML/TOML）。三方依赖最终只有 `modernc.org/sqlite`、`golang.org/x/crypto`、`golang.org/x/term`。
+
 ---
 
 ## 8. 留给阶段 3（架构设计）解决的设计点
@@ -122,4 +125,4 @@
 | 模型接入 | 自写 Provider 抽象，多家可切换 | Go 无成熟统一层；HTTP 可控 |
 | key 安全 | agent 本地加密存储 | 重启自恢复，自愈不中断 |
 | 存储 | 纯 Go SQLite + Markdown 知识档案 | 单二进制 + 人可改 |
-| 终端 UI | bubbletea（默认，可降级 REPL） | 对标 claude code |
+| 终端 UI | 自写 raw-mode REPL（未引 bubbletea） | 对标 claude code，零额外依赖 |

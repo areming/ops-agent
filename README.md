@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/areming/ops-agent/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/areming/ops-agent/main/install.sh | sudo OPS_VERSION=v0.0.1 sh
 ```
 
-装完直接运行 `ops`，首次会引导你选模型 provider 并填入 API key，然后进入对话。
+装完直接运行 `ops`，首次会引导你配置模型：上下键从主流 provider（DeepSeek / OpenAI / Anthropic / Moonshot / Qwen / z.ai / Gemini / Grok / OpenRouter 等，base URL 已预填）里选一个、再选模型（或 Custom 手填），粘贴 API key（输入时只露头尾、中间打码），然后进入对话。
 
 ### Windows
 

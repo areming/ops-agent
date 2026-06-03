@@ -27,7 +27,7 @@ OPSAGENT_API_KEY=sk-xxx \
 ```
 
 直接 `./ops`（无参）会走 `RunLocal()`：在进程内起 agent + 用 `net.Pipe()` 连接，无需 serve。
-未配置时自动进入引导（onboardLocal），配置落 `~/.config/ops-agent/config.json`（Linux/Mac）。
+未配置时自动进入引导（onboardLocal），配置落 `~/.config/opsagent/config.json`（Linux/Mac）。
 
 ## 本地测试
 

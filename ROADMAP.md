@@ -29,7 +29,7 @@
 **消除的风险**：传输层是否成立（最高设计风险）；单二进制交叉编译是否成立。
 
 **包含**：
-- `cmd/opsagent` 入口 + 子命令分发（`serve` / `connect` / `_bridge`）。
+- `cmd/ops` 入口 + 子命令分发（`serve` / `connect` / `_bridge`）。
 - `serve`：监听 unix socket（文件权限限定），收 Frame、原样 echo 流式回。
 - `connect <host>`：SSH 进远端跑 `_bridge`，把 stdio 桥到 unix socket；本地读一行 → 发 → 流式打印回显。
 - `transport`：Frame 编解码 + socket/bridge 骨架。
@@ -38,7 +38,7 @@
 **不包含**：模型、工具、安全、存储、TUI、配置（全部桩或硬编码）。
 
 **完成标准（验收）**：
-- 在一台真实/本地 SSH 可达的机器上 `opsagent serve`，本地 `opsagent connect` 输入文字能流式收到 echo。
+- 在一台真实/本地 SSH 可达的机器上 `ops serve`，本地 `ops connect` 输入文字能流式收到 echo。
 - `go build` 产出单个无依赖二进制，能交叉编译到 linux/amd64+arm64。
 - `go vet` / lint 通过，无未用代码。
 
@@ -52,7 +52,7 @@
 **包含**：
 - `model.Provider` 接口 + Anthropic 适配 + OpenAI 兼容适配。
 - `agent`：Session + Agent Loop 的对话部分（拼上下文、调模型、流式回 Frame）。
-- 最小 `config`（TOML）：选 provider/model；key 暂可走环境变量（M3 再加密）。
+- 最小 `config`（环境变量；JSON 配置文件后置到 M7）：选 provider/model；key 暂可走环境变量（M3 再加密）。
 
 **不包含**：工具执行、Safety Gate、持久化、知识档案。
 
@@ -91,7 +91,7 @@
 **包含**：
 - `memory/knowledge`：Markdown 知识档案加载，注入系统提示。
 - `memory/store`：会话历史持久化 + 跨 session 回看。
-- `secret/keystore`：API key 加密存取（NaCl secretbox / age，机器绑定 + 严格文件权限）；`opsagent key set/list`。
+- `secret/keystore`：API key 加密存取（NaCl secretbox，机器绑定 + 严格文件权限）；`ops key set/list`。
 
 **完成标准**：
 - 重开 session 能引用历史；知识档案内容影响模型回答。
@@ -101,12 +101,12 @@
 
 ## M4 — enroll 一键部署（兑现"部署简单"硬约束）
 
-**目标**：`opsagent enroll <host>` 一条命令完成部署。
+**目标**：`ops enroll <host>` 一条命令完成部署。
 **消除的风险**：平台相关繁琐项（用户/sudoers/systemd）。
 
 **包含**：
 - 传二进制、建专用用户 `opsagent`、生成 sudoers 白名单、装 systemd unit、初始化配置与目录。
-- `opsagent todos` / `logs` 查看入口。
+- `ops todos` / `logs` 查看入口。
 
 **完成标准**：
 - 在一台干净 Linux 机器上一条命令部署成功，`connect` 即可用。

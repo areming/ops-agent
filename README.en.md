@@ -53,7 +53,7 @@ Pin a specific version:
 curl -fsSL https://raw.githubusercontent.com/areming/ops-agent/main/install.sh | sudo OPS_VERSION=v0.0.1 sh
 ```
 
-After installation, run `ops`. On first run it guides you through choosing a model provider and entering your API key, then drops you into a conversation.
+After installation, run `ops`. On first run it guides you through model setup: arrow-key pick a provider from the mainstream list (DeepSeek / OpenAI / Anthropic / Moonshot / Qwen / z.ai / Gemini / Grok / OpenRouter … with base URLs prefilled), pick a model (or Custom to type one), and paste your API key (echoed masked — only head and tail shown). Then it drops you into a conversation.
 
 ### Windows
 
