@@ -79,7 +79,7 @@ func TestClassifyResident(t *testing.T) {
 func TestPersistLocalConfigRoundTrip(t *testing.T) {
 	localTestEnv(t)
 
-	if err := persistLocalConfig("deepseek", "deepseek-chat", "https://api.deepseek.com", "sk-secret"); err != nil {
+	if err := persistLocalConfig("deepseek", "deepseek-chat", "https://api.deepseek.com", "DeepSeek / deepseek-chat", "sk-secret"); err != nil {
 		t.Fatalf("persistLocalConfig: %v", err)
 	}
 

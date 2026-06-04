@@ -9,10 +9,6 @@ import (
 	"github.com/areming/ops-agent/internal/secret"
 )
 
-// localKeySecretName is the keystore entry the agent reads its model API key
-// from. It must match the name the agent and `key set` use ("api_key").
-const localKeySecretName = "api_key"
-
 // onboardLocal runs first-time local setup: it asks for a provider, model,
 // optional base URL and the API key, seals the key in the encrypted keystore,
 // and persists the model selection to config.json. After it returns,
@@ -33,7 +29,7 @@ func onboardLocal() error {
 		return fmt.Errorf("空 key，已取消")
 	}
 
-	if err := persistLocalConfig(entry.Adapter, modelName, baseURL, apiKey); err != nil {
+	if err := persistLocalConfig(entry.Adapter, modelName, baseURL, entry.Label, apiKey); err != nil {
 		return err
 	}
 
@@ -41,20 +37,26 @@ func onboardLocal() error {
 	return nil
 }
 
-// persistLocalConfig seals the API key in the keystore and writes the model
-// selection to config.json, so the next config.Load picks them up.
-func persistLocalConfig(provider, modelName, baseURL, apiKey string) error {
+// persistLocalConfig saves the model selection as a profile and seals its API
+// key under the profile's own keystore entry, so the next config.Load picks
+// the choice up. On a seal failure it rolls back the profile so the list never
+// points at a missing key.
+func persistLocalConfig(provider, modelName, baseURL, label, apiKey string) error {
 	cfg := config.Load()
-	ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath)
+	stored, err := config.AddProfile(cfg.StateDir, config.Profile{
+		Label: label, Provider: provider, Model: modelName, BaseURL: baseURL,
+	})
 	if err != nil {
 		return err
 	}
-	if err := ks.Set(localKeySecretName, apiKey); err != nil {
+	ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath)
+	if err != nil {
+		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
 		return err
 	}
-
-	cfg.Provider = provider
-	cfg.Model = modelName
-	cfg.BaseURL = baseURL
-	return config.Save(cfg)
+	if err := ks.Set(stored.KeyRef, apiKey); err != nil {
+		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		return err
+	}
+	return nil
 }

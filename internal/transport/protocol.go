@@ -53,6 +53,44 @@ type ControlReplyPayload struct {
 	Err  string `json:"err,omitempty"`
 }
 
+// Model management (the /model panel) rides on control frames: the Cmd names
+// the action (ModelList/Switch/Add/Delete) and structured data is JSON-encoded
+// into the request Arg or reply Text, so no new frame type is needed. The add
+// request carries the API key — it travels the same SSH-tunneled socket the
+// session already uses and the daemon seals it into its keystore on arrival.
+const (
+	CmdModelList   = "model.list"
+	CmdModelSwitch = "model.switch" // Arg = profile id (or, off-TTY, a name to match)
+	CmdModelAdd    = "model.add"    // Arg = JSON ModelAddRequest
+	CmdModelDelete = "model.delete" // Arg = profile id
+)
+
+// ModelProfile is one saved model configuration in a ModelListReply.
+type ModelProfile struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	BaseURL  string `json:"base_url,omitempty"`
+	Active   bool   `json:"active,omitempty"`
+}
+
+// ModelListReply is the JSON the agent returns (in the control reply Text) for
+// CmdModelList.
+type ModelListReply struct {
+	Profiles []ModelProfile `json:"profiles"`
+}
+
+// ModelAddRequest is the JSON the client sends (in the control request Arg) for
+// CmdModelAdd: a new profile plus its API key to seal.
+type ModelAddRequest struct {
+	Label    string `json:"label,omitempty"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	BaseURL  string `json:"base_url,omitempty"`
+	Key      string `json:"key"`
+}
+
 // ToolStartPayload notifies the client that a tool is about to run, for
 // display only.
 type ToolStartPayload struct {

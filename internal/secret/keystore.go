@@ -66,6 +66,17 @@ func (k *Keystore) Set(name, value string) error {
 	return k.save()
 }
 
+// Delete removes the secret stored under name and persists the store. Removing
+// a missing entry is a no-op (no error), so deleting a profile whose key was
+// never sealed still succeeds.
+func (k *Keystore) Delete(name string) error {
+	if _, ok := k.entries[name]; !ok {
+		return nil
+	}
+	delete(k.entries, name)
+	return k.save()
+}
+
 // Get opens the secret stored under name. ok is false if there is no such
 // entry; an error means the ciphertext failed to authenticate (tampering or
 // a mismatched master key).

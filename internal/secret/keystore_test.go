@@ -36,6 +36,38 @@ func TestSetGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesEntry(t *testing.T) {
+	store, master := paths(t)
+	ks, err := Open(store, master)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_ = ks.Set("model.a.key", "sk-a")
+	_ = ks.Set("model.b.key", "sk-b")
+
+	if err := ks.Delete("model.a.key"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok, _ := ks.Get("model.a.key"); ok {
+		t.Error("deleted entry still present")
+	}
+	// The other entry is untouched, and the delete is durable across a reopen.
+	reopened, err := Open(store, master)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, ok, _ := reopened.Get("model.b.key"); !ok {
+		t.Error("unrelated entry lost after delete")
+	}
+	if _, ok, _ := reopened.Get("model.a.key"); ok {
+		t.Error("delete did not persist")
+	}
+	// Deleting a missing entry is a no-op, not an error.
+	if err := ks.Delete("model.a.key"); err != nil {
+		t.Errorf("Delete(missing) = %v, want nil", err)
+	}
+}
+
 func TestReopenStillDecrypts(t *testing.T) {
 	store, master := paths(t)
 	ks, err := Open(store, master)

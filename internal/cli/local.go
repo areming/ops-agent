@@ -143,6 +143,6 @@ func configured() bool {
 	if err != nil {
 		return false
 	}
-	_, ok, _ := ks.Get(localKeySecretName)
+	_, ok, _ := ks.Get(cfg.KeyRef)
 	return ok
 }

@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -155,12 +156,16 @@ func resolveAPIKey(cfg config.Config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open keystore: %w", err)
 	}
-	key, ok, err := ks.Get(apiKeySecretName)
+	keyRef := cfg.KeyRef
+	if keyRef == "" {
+		keyRef = apiKeySecretName
+	}
+	key, ok, err := ks.Get(keyRef)
 	if err != nil {
 		return "", err
 	}
 	if !ok {
-		return "", fmt.Errorf("no API key: set OPSAGENT_API_KEY or run `ops key set %s`", apiKeySecretName)
+		return "", fmt.Errorf("no API key: set OPSAGENT_API_KEY or run `ops key set %s`", keyRef)
 	}
 	return key, nil
 }
@@ -238,8 +243,17 @@ func (srv *server) handleControl(ctx context.Context, conn *transport.Conn, sess
 		return controlReply(conn, "", "decode control: "+err.Error())
 	}
 	switch req.Cmd {
-	case "models":
-		text, err := srv.controlModels(req.Arg)
+	case transport.CmdModelList, "models", "model":
+		text, err := srv.modelList()
+		return controlReply(conn, text, errString(err))
+	case transport.CmdModelSwitch:
+		text, err := srv.modelSwitch(req.Arg)
+		return controlReply(conn, text, errString(err))
+	case transport.CmdModelAdd:
+		text, err := srv.modelAdd(req.Arg)
+		return controlReply(conn, text, errString(err))
+	case transport.CmdModelDelete:
+		text, err := srv.modelDelete(req.Arg)
 		return controlReply(conn, text, errString(err))
 	case "logs":
 		text, err := srv.controlLogs(ctx, req.Arg)
@@ -254,38 +268,153 @@ func (srv *server) handleControl(ctx context.Context, conn *transport.Conn, sess
 	}
 }
 
-// controlModels lists known models (empty arg) or switches to arg, rebuilding
-// the provider and persisting the choice so it survives a restart. The switch
-// applies to whichever agent this connection talks to (local or remote).
-func (srv *server) controlModels(arg string) (string, error) {
+// modelList returns the saved profiles (JSON ModelListReply) for the /model
+// panel, marking the active one. It applies to whichever agent this connection
+// talks to (local or the remote daemon).
+func (srv *server) modelList() (string, error) {
+	profs, active := config.ListProfiles(srv.stateDir())
+	var reply transport.ModelListReply
+	for _, p := range profs {
+		reply.Profiles = append(reply.Profiles, transport.ModelProfile{
+			ID: p.ID, Label: p.Label, Provider: p.Provider, Model: p.Model,
+			BaseURL: p.BaseURL, Active: p.ID == active,
+		})
+	}
+	b, err := json.Marshal(reply)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// modelSwitch makes the profile named by arg (its id, or a matching model
+// name/label) active and rebuilds the provider so the choice takes effect now
+// and survives a restart.
+func (srv *server) modelSwitch(arg string) (string, error) {
+	if arg == "" {
+		return "", fmt.Errorf("usage: /model <名称>")
+	}
+	id, err := resolveProfileID(srv.stateDir(), arg)
+	if err != nil {
+		return "", err
+	}
+	if err := config.SetActive(srv.stateDir(), id); err != nil {
+		return "", err
+	}
+	if err := srv.reloadActive(); err != nil {
+		return "", err
+	}
+	return "已切换模型 → " + srv.provider().Model(), nil
+}
+
+// modelAdd seals the new profile's API key and appends the profile (which
+// becomes active), then rebuilds the provider. On a seal failure it rolls back
+// the dangling profile so the list never points at a missing key.
+func (srv *server) modelAdd(arg string) (string, error) {
+	var req transport.ModelAddRequest
+	if err := json.Unmarshal([]byte(arg), &req); err != nil {
+		return "", fmt.Errorf("bad add request: %w", err)
+	}
+	if req.Provider == "" || req.Model == "" || req.Key == "" {
+		return "", fmt.Errorf("provider / model / key 不能为空")
+	}
 	srv.mu.Lock()
 	cfg := srv.cfg
-	current := srv.prov.Model()
 	srv.mu.Unlock()
 
-	if arg == "" {
-		return formatModelList(cfg.Provider, current), nil
+	stored, err := config.AddProfile(cfg.StateDir, config.Profile{
+		Label: req.Label, Provider: req.Provider, Model: req.Model, BaseURL: req.BaseURL,
+	})
+	if err != nil {
+		return "", err
 	}
+	ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath)
+	if err != nil {
+		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		return "", err
+	}
+	if err := ks.Set(stored.KeyRef, req.Key); err != nil {
+		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		return "", err
+	}
+	if err := srv.reloadActive(); err != nil {
+		return "", err
+	}
+	return "已添加并切换 → " + stored.Label, nil
+}
 
+// modelDelete removes the profile named by arg and its sealed key. It refuses
+// to delete the active profile (switch away first) or the last remaining one.
+func (srv *server) modelDelete(arg string) (string, error) {
+	stateDir := srv.stateDir()
+	id, err := resolveProfileID(stateDir, arg)
+	if err != nil {
+		return "", err
+	}
+	profs, active := config.ListProfiles(stateDir)
+	if len(profs) <= 1 {
+		return "", fmt.Errorf("这是最后一个模型配置，不能删除（至少保留一个）")
+	}
+	if id == active {
+		return "", fmt.Errorf("不能删除当前在用的模型，先切到别的再删")
+	}
+	removed, err := config.DeleteProfile(stateDir, id)
+	if err != nil {
+		return "", err
+	}
+	srv.mu.Lock()
+	cfg := srv.cfg
+	srv.mu.Unlock()
+	if removed.KeyRef != "" && removed.KeyRef != config.LegacyKeyName {
+		if ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath); err == nil {
+			_ = ks.Delete(removed.KeyRef)
+		}
+	}
+	return "已删除模型配置 " + removed.Label, nil
+}
+
+// reloadActive re-resolves the active profile from config, rebuilds the
+// provider, and swaps both in under the lock. Used after switch/add.
+func (srv *server) reloadActive() error {
+	cfg := config.Load()
 	apiKey, err := resolveAPIKey(cfg)
 	if err != nil {
-		return "", err
+		return err
 	}
-	prov, err := model.New(cfg.Provider, apiKey, cfg.BaseURL, arg)
+	prov, err := model.New(cfg.Provider, apiKey, cfg.BaseURL, cfg.Model)
 	if err != nil {
-		return "", err
+		return err
 	}
-	cfg.Model = arg
-
 	srv.mu.Lock()
-	srv.prov = prov
 	srv.cfg = cfg
+	srv.prov = prov
 	srv.mu.Unlock()
+	return nil
+}
 
-	if err := config.Save(cfg); err != nil {
-		return "", err
+// stateDir returns the agent's state directory under the lock.
+func (srv *server) stateDir() string {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	return srv.cfg.StateDir
+}
+
+// resolveProfileID matches arg against a saved profile by id, then
+// case-insensitively by model name or label.
+func resolveProfileID(stateDir, arg string) (string, error) {
+	profs, _ := config.ListProfiles(stateDir)
+	for _, p := range profs {
+		if p.ID == arg {
+			return p.ID, nil
+		}
 	}
-	return fmt.Sprintf("已切换模型 → %s", arg), nil
+	la := strings.ToLower(strings.TrimSpace(arg))
+	for _, p := range profs {
+		if strings.ToLower(p.Model) == la || strings.ToLower(p.Label) == la {
+			return p.ID, nil
+		}
+	}
+	return "", fmt.Errorf("没有匹配的模型配置：%q", arg)
 }
 
 // controlYolo toggles or sets the session's auto-approve mode. Arg "on"/"off"
@@ -326,22 +455,6 @@ func (srv *server) controlLogs(ctx context.Context, arg string) (string, error) 
 		fmt.Fprintf(&b, "%s  %s  [%s/%s] exit=%d  %s\n", e.CreatedAt, e.Source, e.Decision, e.Risk, e.ExitCode, e.Command)
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
-}
-
-// formatModelList renders the known models for a provider, marking the
-// current one.
-func formatModelList(provider, current string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "provider=%s  当前=%s\n已知模型：\n", provider, current)
-	for _, m := range model.KnownModels(provider) {
-		mark := "  "
-		if m == current {
-			mark = "* "
-		}
-		fmt.Fprintf(&b, "%s%s\n", mark, m)
-	}
-	b.WriteString("切换：/models <名称>")
-	return b.String()
 }
 
 // controlReply sends one control reply frame.
