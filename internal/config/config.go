@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-
 type Config struct {
 	Provider string // openai | deepseek | anthropic
 	Model    string
