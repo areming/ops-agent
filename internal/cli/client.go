@@ -331,8 +331,9 @@ func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 		clearScreen()
 		return false, sendControl(conn, cmd, arg)
 	case "models", "model":
-		// /model (singular, like claude) is an alias; the agent control is "models".
-		return false, sendControl(conn, "models", arg)
+		// Non-TTY/cooked path: text list, or switch-by-name when an arg is given.
+		// The interactive panel runs on the raw path (handleSlashRaw).
+		return false, modelManageText(connControl(conn), os.Stdout, arg)
 	case "logs", "yolo":
 		return false, sendControl(conn, cmd, arg)
 	default:
@@ -343,22 +344,8 @@ func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 
 // sendControl writes a control request and prints the agent's single reply.
 func sendControl(conn *transport.Conn, cmd, arg string) error {
-	req, err := transport.PayloadFrame(transport.TypeControlRequest, transport.ControlRequestPayload{Cmd: cmd, Arg: arg})
+	reply, err := connControl(conn)(cmd, arg)
 	if err != nil {
-		return err
-	}
-	if err := conn.WriteFrame(req); err != nil {
-		return err
-	}
-	f, err := conn.ReadFrame()
-	if err != nil {
-		return err
-	}
-	if f.Type != transport.TypeControlReply {
-		return fmt.Errorf("expected control reply, got %s", f.Type)
-	}
-	var reply transport.ControlReplyPayload
-	if err := f.Decode(&reply); err != nil {
 		return err
 	}
 	if reply.Err != "" {
@@ -373,7 +360,7 @@ func printSlashHelp() { printSlashHelpTo(os.Stdout) }
 
 func printSlashHelpTo(w io.Writer) {
 	fmt.Fprint(w, `命令：
-  /model [名称]    查看模型；带名称则切换当前会话所连机器的模型
+  /model [名称]    模型面板：↑/↓ 选择 · Enter 切换 · d 删除 · 末行新增；带名称直接切换
   /logs [N]        查看最近 N 条操作日志（默认 20）
   /yolo [on|off]   自动放行（默认开）：开=非危险操作直接执行，关=逐条确认；危险命令始终确认
   /clear           清空当前对话

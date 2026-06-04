@@ -273,6 +273,7 @@ const (
 	menuPicked menuResult = iota // Enter on a row
 	menuBack                     // Esc / ← : step back to the previous wizard step
 	menuCancel                   // Ctrl-C / read error / non-TTY EOF : leave the wizard
+	menuDelete                   // 'd' on a row (the /model panel only)
 )
 
 // selectMenu renders an arrow-key list and returns the chosen index. It mirrors

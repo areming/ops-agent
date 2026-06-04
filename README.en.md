@@ -150,13 +150,13 @@ ops uninstall [--purge]                     # uninstall; --purge also wipes all 
 
 > **One server, one brain**: each machine has a single resident agent that holds its model, key, memory, audit and patrol. On a deployed machine, whether you `ops connect <host>` from your laptop or log in and just type `ops`, you reach the same daemon — no re-onboarding. If the first run reports it can't access the socket, log in again so your `opsagent` group membership applies (or use `newgrp opsagent` / `sudo ops`).
 
-Inside a conversation, slash commands (matching common CLIs): `/models [name]` view/switch the model of the machine this session talks to, `/logs [N]` view the audit trail, `/clear` reset the current conversation, `/help`, `/quit`.
+Inside a conversation, slash commands (matching common CLIs): `/model` opens the model panel (↑/↓ to select, Enter to switch, `d` to delete, a last row to add; `/model <name>` switches directly), `/logs [N]` view the audit trail, `/clear` reset the current conversation, `/help`, `/quit`. They act on whichever machine this session talks to (local or remote).
 
 Details of patrol and fan-out (boundaries, safe defaults, verification) are in [ONBOARDING.md](ONBOARDING.md) §6/§7.
 
 ## Configuration
 
-Precedence is **environment variable > `config.json` (under StateDir) > built-in default**. Model selection (provider/model/base_url + the three diagnosis fields) is persisted to `config.json` during onboarding or a `/models` switch; the API key is **not** stored in config — it lives encrypted in the keystore (always under the entry name `api_key`). Common environment variables:
+Precedence is **environment variable > `config.json` (under StateDir) > built-in default**. Models are stored as **profiles** in `config.json` (each = provider/model/base_url + a keystore entry reference, plus an active pointer); onboarding and the `/model` panel's add/switch/delete all write here. The API key is **not** stored in config — each profile's key lives encrypted in the keystore (an old single `api_key` entry auto-migrates to one `default` profile). The three diagnosis fields are stored separately. Common environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -203,17 +203,13 @@ sudo systemctl restart opsagent
 
 **② Switch / add a new provider**
 
-In-session `/models <name>` only switches the model **within the current provider** — it cannot change the provider. Switching providers means changing provider + base_url + key together:
+Open the model panel with `/model`; its last row "+ add model…" configures a **new provider/model profile** (pick provider → model → fill base URL/key) and switches to it; `d` deletes a profile, `↑/↓`+Enter switch between saved ones. Each new key is encrypted per-profile in the keystore — no file editing. This works for the local session and for a remote daemon reached via `ops connect <host>` (the key travels the SSH-tunneled channel and the daemon seals it).
 
-Local: delete `config.json` to re-trigger onboarding on the next `ops`, or edit `config.json`'s `provider`/`model`/`base_url` and run `ops key set api_key` with the new key. Local config dir: Windows `%AppData%\opsagent\`, macOS/Linux `~/.config/opsagent/` (holds `config.json` + `keystore.json`).
-
-Remote: re-run enroll with the new provider; it rewrites the unit's environment, rotates the key, and restarts:
-
-```bash
-echo "$ANTHROPIC_KEY" | ops enroll <host> --provider anthropic --model claude-... [--base-url ...]
-```
-
-> **Note (enrolled hosts)**: enroll writes `OPSAGENT_PROVIDER` (and `OPSAGENT_MODEL` when `--model` is given) into the systemd unit's `Environment=`, which by the precedence above **overrides `config.json`**. So switching providers remotely by editing `config.json` won't work — re-run enroll (or edit the unit and `daemon-reload`). Likewise, if the unit pins `OPSAGENT_MODEL`, an in-session `/models` switch may be reverted after a restart.
+> **Note (enrolled hosts)**: enroll currently writes `OPSAGENT_PROVIDER` (and `OPSAGENT_MODEL` when `--model` is given) into the systemd unit's `Environment=`, which **overrides `config.json`** by precedence. So a panel switch/add on an enrolled remote takes effect for the session but the active model is **reverted to the unit's env after a restart**. To make a remote profile choice durable today, re-run enroll (a later release will have enroll seed profiles into the daemon's config.json and stop pinning env):
+>
+> ```bash
+> echo "$ANTHROPIC_KEY" | ops enroll <host> --provider anthropic --model claude-... [--base-url ...]
+> ```
 
 ## Development
 

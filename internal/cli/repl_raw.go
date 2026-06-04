@@ -50,7 +50,7 @@ func replRaw(conn *transport.Conn, label string) error {
 		}
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "/") {
-			quit, err := handleSlashRaw(conn, frames, out, trimmed)
+			quit, err := handleSlashRaw(conn, frames, keys, out, trimmed)
 			if err != nil {
 				return err
 			}
@@ -233,8 +233,9 @@ func askConfirmRaw(keys <-chan keyEvent, out io.Writer, p transport.ConfirmReque
 
 // handleSlashRaw is the raw-path /command handler. It mirrors handleSlash but
 // reads the agent's control reply from the shared frame channel instead of the
-// connection directly (a second reader would race the frame goroutine).
-func handleSlashRaw(conn *transport.Conn, frames <-chan frameOrErr, out io.Writer, line string) (quit bool, err error) {
+// connection directly (a second reader would race the frame goroutine). /model
+// opens the interactive panel, which reads navigation from the same key channel.
+func handleSlashRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEvent, out io.Writer, line string) (quit bool, err error) {
 	cmd, arg, _ := strings.Cut(strings.TrimPrefix(line, "/"), " ")
 	cmd = strings.ToLower(cmd)
 	arg = strings.TrimSpace(arg)
@@ -248,7 +249,16 @@ func handleSlashRaw(conn *transport.Conn, frames <-chan frameOrErr, out io.Write
 		fmt.Fprint(out, "\x1b[H\x1b[2J")
 		return false, sendControlRaw(conn, frames, out, cmd, arg)
 	case "models", "model":
-		return false, sendControlRaw(conn, frames, out, "models", arg)
+		rt := framesControl(conn, frames)
+		if arg != "" {
+			reply, err := rt(transport.CmdModelSwitch, arg)
+			if err != nil {
+				return false, err
+			}
+			printReply(out, reply)
+			return false, nil
+		}
+		return false, runModelPanel(rt, keys, out)
 	case "logs", "yolo":
 		return false, sendControlRaw(conn, frames, out, cmd, arg)
 	default:
@@ -260,25 +270,8 @@ func handleSlashRaw(conn *transport.Conn, frames <-chan frameOrErr, out io.Write
 // sendControlRaw writes a control request and prints the agent's single reply,
 // taken from the frame channel.
 func sendControlRaw(conn *transport.Conn, frames <-chan frameOrErr, out io.Writer, cmd, arg string) error {
-	req, err := transport.PayloadFrame(transport.TypeControlRequest, transport.ControlRequestPayload{Cmd: cmd, Arg: arg})
+	reply, err := framesControl(conn, frames)(cmd, arg)
 	if err != nil {
-		return err
-	}
-	if err := conn.WriteFrame(req); err != nil {
-		return err
-	}
-	fe, ok := <-frames
-	if !ok {
-		return io.EOF
-	}
-	if fe.err != nil {
-		return fe.err
-	}
-	if fe.frame.Type != transport.TypeControlReply {
-		return fmt.Errorf("expected control reply, got %s", fe.frame.Type)
-	}
-	var reply transport.ControlReplyPayload
-	if err := fe.frame.Decode(&reply); err != nil {
 		return err
 	}
 	if reply.Err != "" {
