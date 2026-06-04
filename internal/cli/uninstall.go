@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/areming/ops-agent/internal/config"
 )
 
 // Uninstall removes ops from the local machine.
@@ -17,7 +19,9 @@ import (
 // install and, if so, stops the service and removes all system artifacts;
 // otherwise it removes just the current binary.
 //
-// State and config are kept by default. Pass purge=true to delete them too.
+// State and config are kept by default. Pass purge=true for a clean, full
+// uninstall that also deletes all data (keystore, audit/session DB, knowledge)
+// and, on an enrolled Linux host, the service user — leaving nothing behind.
 func Uninstall(purge bool) error {
 	switch runtime.GOOS {
 	case "windows":
@@ -25,13 +29,13 @@ func Uninstall(purge bool) error {
 	case "linux":
 		return uninstallLinux(purge)
 	default:
-		return uninstallGeneric()
+		return uninstallBinaryOnly(purge)
 	}
 }
 
 func uninstallWindows(purge bool) error {
 	installDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "ops")
-	statePath := windowsStateDir()
+	statePath := localStateDir()
 
 	fmt.Println("will remove:")
 	fmt.Printf("  binary directory  %s\n", installDir)
@@ -42,6 +46,7 @@ func uninstallWindows(purge bool) error {
 		fmt.Printf("  state/config      %s  (kept — pass --purge to delete)\n", statePath)
 	}
 	fmt.Println()
+	printPurgeWarning(purge)
 
 	if !confirmUninstall() {
 		return fmt.Errorf("aborted")
@@ -81,7 +86,7 @@ func uninstallLinux(purge bool) error {
 	if enrolled {
 		return uninstallLinuxEnrolled(purge)
 	}
-	return uninstallLinuxLocal()
+	return uninstallBinaryOnly(purge)
 }
 
 func uninstallLinuxEnrolled(purge bool) error {
@@ -100,6 +105,7 @@ func uninstallLinuxEnrolled(purge bool) error {
 		fmt.Printf("  state    %s  (kept — pass --purge to delete)\n", stateDir)
 	}
 	fmt.Println()
+	printPurgeWarning(purge)
 
 	if !confirmUninstall() {
 		return fmt.Errorf("aborted")
@@ -124,15 +130,24 @@ func uninstallLinuxEnrolled(purge bool) error {
 	return nil
 }
 
-func uninstallLinuxLocal() error {
+// uninstallBinaryOnly handles a non-service install — a local/dev binary on
+// Linux, or ops on any other OS. It removes the binary, and with purge also
+// deletes this user's state directory so a full uninstall leaves no data
+// behind. (The enrolled service has its own path that removes /var/lib/opsagent
+// and the service user.)
+func uninstallBinaryOnly(purge bool) error {
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate binary: %w", err)
 	}
+	stateDir := localStateDir()
 
 	fmt.Println("will remove:")
-	fmt.Printf("  binary  %s\n", execPath)
+	for _, line := range binaryOnlyPlan(execPath, stateDir, purge) {
+		fmt.Printf("  %s\n", line)
+	}
 	fmt.Println()
+	printPurgeWarning(purge)
 
 	if !confirmUninstall() {
 		return fmt.Errorf("aborted")
@@ -142,26 +157,34 @@ func uninstallLinuxLocal() error {
 		return fmt.Errorf("remove binary: %w", err)
 	}
 	fmt.Printf("removed %s\n", execPath)
+
+	if purge && stateDir != "" {
+		if err := os.RemoveAll(stateDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove state dir: %v\n", err)
+		} else {
+			fmt.Printf("removed state dir %s\n", stateDir)
+		}
+	}
+
 	fmt.Println("uninstalled.")
 	return nil
 }
 
-func uninstallGeneric() error {
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locate binary: %w", err)
+// binaryOnlyPlan returns the human-readable removal-plan lines for a
+// non-service install: always the binary, plus the state dir (marked deleted
+// or kept) unless its path is unknown. Split out from the IO so the --purge
+// behavior is unit-tested.
+func binaryOnlyPlan(execPath, stateDir string, purge bool) []string {
+	lines := []string{"binary  " + execPath}
+	if stateDir == "" {
+		return lines
 	}
-
-	fmt.Printf("will remove: %s\n\n", execPath)
-	if !confirmUninstall() {
-		return fmt.Errorf("aborted")
+	if purge {
+		lines = append(lines, "state   "+stateDir+"  (--purge)")
+	} else {
+		lines = append(lines, "state   "+stateDir+"  (kept — pass --purge to delete)")
 	}
-
-	if err := os.Remove(execPath); err != nil {
-		return fmt.Errorf("remove binary: %w", err)
-	}
-	fmt.Println("uninstalled.")
-	return nil
+	return lines
 }
 
 func confirmUninstall() bool {
@@ -191,13 +214,30 @@ func sudoExec(name string, args ...string) {
 
 func sudoRemove(p string) { sudoExec("rm", "-f", p) }
 
-// windowsStateDir returns the opsagent state directory on Windows
-// (mirrors the path computed by config.defaultStateDir).
-func windowsStateDir() string {
-	if dir, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(dir, "opsagent")
+// localStateDir resolves this user's state directory the same way the agent
+// does (honoring OPSAGENT_STATE_DIR), so a --purge also removes a customized
+// location. Used for non-service installs (Windows, local/dev Linux, other
+// OSes); the enrolled service always lives at the fixed stateDir.
+func localStateDir() string {
+	return config.Load().StateDir
+}
+
+// purgeWarning is the loud, irreversible-data line shown before a --purge
+// confirmation; it is empty when not purging. Split out so the message is
+// unit-tested.
+func purgeWarning(purge bool) string {
+	if !purge {
+		return ""
 	}
-	return ""
+	return "⚠ --purge 会永久删除全部数据：密钥库、审计/会话库、知识档案 —— 不可恢复。"
+}
+
+// printPurgeWarning shows the purge warning (if any) on stderr, just before
+// the confirmation prompt.
+func printPurgeWarning(purge bool) {
+	if w := purgeWarning(purge); w != "" {
+		fmt.Fprintln(os.Stderr, w)
+	}
 }
 
 // windowsRemoveFromPath removes dir from the current user's PATH stored in

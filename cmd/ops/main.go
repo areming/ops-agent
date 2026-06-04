@@ -369,7 +369,7 @@ usage:
   ops key set <name>             (value read from stdin)
   ops key list
   ops update [-check]            update to the latest release
-  ops uninstall [--purge]        remove ops from this machine
+  ops uninstall [--purge]        remove ops (--purge: also wipe all data — keystore/DB/knowledge; confirms first)
   ops logs [-n N] [--db PATH]    show the audit trail
   ops todos [--db PATH]          show open self-heal todos
   ops _bridge [--socket PATH]    (internal; invoked over SSH)

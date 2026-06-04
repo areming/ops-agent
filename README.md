@@ -144,6 +144,7 @@ ops logs [-n N]                          # 审计轨迹（含 source: chat/patro
 ops todos                                # 巡检/自愈待办
 ops key set <name>                       # 存密钥（值从 stdin 读）
 ops key list
+ops uninstall [--purge]                  # 卸载；--purge 连同全部数据（密钥库/审计·会话库/知识档案）一并删除，执行前需手输 yes 确认
 ```
 
 > **一机一脑**：每台机器只有一个常驻 agent，模型/key/记忆/审计/巡检都在它那里。在已 enroll 的机器上，无论从本地 `ops connect <host>`，还是登录上去直接敲 `ops`，连的都是同一个 daemon——不会重新引导配置。首次若提示无权访问 socket，重新登录一次让 `opsagent` 组生效即可（或临时 `newgrp opsagent` / `sudo ops`）。

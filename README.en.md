@@ -145,6 +145,7 @@ ops logs [-n N]                             # audit trail (with source: chat/pat
 ops todos                                   # patrol / self-heal todos
 ops key set <name>                          # store a secret (value read from stdin)
 ops key list
+ops uninstall [--purge]                     # uninstall; --purge also wipes all data (keystore/DB/knowledge), confirms first
 ```
 
 > **One server, one brain**: each machine has a single resident agent that holds its model, key, memory, audit and patrol. On a deployed machine, whether you `ops connect <host>` from your laptop or log in and just type `ops`, you reach the same daemon — no re-onboarding. If the first run reports it can't access the socket, log in again so your `opsagent` group membership applies (or use `newgrp opsagent` / `sudo ops`).

@@ -86,6 +86,8 @@ ops key set api_key    # 更换模型 API key（值从 stdin 读）
 ops key list           # 列已存密钥名
 ops run -c "df -h" host1 host2   # 批量只读查询
 ops version            # 查当前二进制版本
+ops uninstall          # 卸载（保留数据）
+ops uninstall --purge  # 干净全量卸载：删二进制 + 全部数据（密钥库/审计·会话库/知识档案）；enrolled 机另删 /var/lib/opsagent 与 opsagent 用户。执行前需手输 yes 确认
 ```
 
 ## 环境变量速查
