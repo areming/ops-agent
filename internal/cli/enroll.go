@@ -216,17 +216,15 @@ func buildSudoers(user string) string {
 }
 
 // buildSystemdUnit returns the service unit. The API key is intentionally
-// absent: it lives encrypted in the keystore, not in the environment.
+// absent: it lives encrypted in the keystore, not in the environment. The chat
+// model (provider/model/base_url) is also absent: it lives in the daemon's
+// config.json as a switchable profile (seeded by bootstrap via `ops _seed`), so
+// an in-session /model change persists across a restart instead of being
+// overridden by a pinned env var. Only deploy-time operational settings — the
+// patrol service list and an explicit diagnosis model — stay as unit env.
 func buildSystemdUnit(opts EnrollOptions) string {
 	var env strings.Builder
 	fmt.Fprintf(&env, "Environment=OPSAGENT_STATE_DIR=%s\n", stateDir)
-	fmt.Fprintf(&env, "Environment=OPSAGENT_PROVIDER=%s\n", opts.Provider)
-	if opts.Model != "" {
-		fmt.Fprintf(&env, "Environment=OPSAGENT_MODEL=%s\n", opts.Model)
-	}
-	if opts.BaseURL != "" {
-		fmt.Fprintf(&env, "Environment=OPSAGENT_BASE_URL=%s\n", opts.BaseURL)
-	}
 	if opts.Services != "" {
 		fmt.Fprintf(&env, "Environment=OPSAGENT_PATROL_SERVICES=%s\n", opts.Services)
 	}
@@ -253,10 +251,31 @@ WantedBy=multi-user.target
 `, opts.User, opts.User, runtimeDirName, env.String(), installBinPath, AgentSocketPath)
 }
 
+// shellQuote wraps s in single quotes for safe embedding in the bootstrap
+// script, escaping any embedded single quote as the usual '\” dance.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// seedFlags builds the `ops _seed` flags from the model selection. The values
+// are single-quoted so a base URL's punctuation can't break the script.
+func seedFlags(opts EnrollOptions) string {
+	flags := "--provider " + shellQuote(opts.Provider)
+	if opts.Model != "" {
+		flags += " --model " + shellQuote(opts.Model)
+	}
+	if opts.BaseURL != "" {
+		flags += " --base-url " + shellQuote(opts.BaseURL)
+	}
+	return flags
+}
+
 // buildBootstrap returns the idempotent root script run over SSH. obtain is a
 // snippet that leaves the agent binary at $BIN_SRC (an scp'd temp path, or a
 // curl+verify). The API key is base64-encoded so it carries no shell
-// metacharacters and is piped straight into `key set` (never written to a file).
+// metacharacters and is piped straight into `ops _seed`, which (as the service
+// user) writes the initial model profile to config.json and seals the key into
+// the keystore — neither is ever written to a file in plaintext.
 func buildBootstrap(opts EnrollOptions, obtain string) string {
 	keyB64 := base64.StdEncoding.EncodeToString([]byte(opts.APIKey))
 	return fmt.Sprintf(`set -euo pipefail
@@ -284,7 +303,7 @@ rm -f /tmp/opsagent.sudoers
 cat > %[7]s <<'UNIT'
 %[8]sUNIT
 
-echo %[9]s | base64 -d | runuser -u "$SVC_USER" -- env OPSAGENT_STATE_DIR="$STATE" %[4]s key set api_key
+echo %[9]s | base64 -d | runuser -u "$SVC_USER" -- env OPSAGENT_STATE_DIR="$STATE" %[4]s _seed %[11]s
 
 if [ -n "${SUDO_USER:-}" ]; then usermod -aG "$SVC_USER" "$SUDO_USER"; fi
 
@@ -303,6 +322,7 @@ echo "opsagent service started"
 		buildSystemdUnit(opts),  // 8
 		keyB64,                  // 9
 		legacyBinPath,           // 10
+		seedFlags(opts),         // 11
 	)
 }
 

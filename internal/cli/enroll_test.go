@@ -51,8 +51,7 @@ func TestBuildSystemdUnit(t *testing.T) {
 		"User=opsagent",
 		"Group=opsagent",
 		"RuntimeDirectory=opsagent",
-		"Environment=OPSAGENT_PROVIDER=deepseek",
-		"Environment=OPSAGENT_MODEL=deepseek-chat",
+		"Environment=OPSAGENT_STATE_DIR=/var/lib/opsagent",
 		"Environment=OPSAGENT_PATROL_SERVICES=nginx,sshd",
 		"Environment=OPSAGENT_DIAG_MODEL=deepseek-v4-pro",
 		"ExecStart=/usr/local/bin/ops serve --socket /run/opsagent/agent.sock",
@@ -62,20 +61,17 @@ func TestBuildSystemdUnit(t *testing.T) {
 			t.Errorf("unit missing %q:\n%s", want, unit)
 		}
 	}
-	// The API key must never appear in the unit.
-	if strings.Contains(unit, "OPSAGENT_API_KEY") {
-		t.Errorf("unit leaks API key env:\n%s", unit)
+	// The chat model is no longer pinned in the unit — it lives in config.json
+	// as a switchable profile, so an in-session /model switch survives restart.
+	for _, forbidden := range []string{"OPSAGENT_PROVIDER=", "OPSAGENT_MODEL=", "OPSAGENT_BASE_URL=", "OPSAGENT_API_KEY"} {
+		if strings.Contains(unit, forbidden) {
+			t.Errorf("unit must not pin %q (now seeded into config.json):\n%s", forbidden, unit)
+		}
 	}
 }
 
 func TestBuildSystemdUnitOmitsEmptyOptionals(t *testing.T) {
 	unit := buildSystemdUnit(EnrollOptions{User: "opsagent", Provider: "openai"})
-	if strings.Contains(unit, "OPSAGENT_MODEL=") {
-		t.Errorf("unit should omit empty model:\n%s", unit)
-	}
-	if strings.Contains(unit, "OPSAGENT_BASE_URL=") {
-		t.Errorf("unit should omit empty base url:\n%s", unit)
-	}
 	if strings.Contains(unit, "OPSAGENT_PATROL_SERVICES=") {
 		t.Errorf("unit should omit empty patrol services:\n%s", unit)
 	}
@@ -95,7 +91,7 @@ func TestBuildBootstrap(t *testing.T) {
 		`install -m 0755 "$BIN_SRC" /usr/local/bin/ops`,
 		"ln -sf /usr/local/bin/ops /usr/local/bin/opsagent",
 		"visudo -cf /tmp/opsagent.sudoers",
-		"runuser -u \"$SVC_USER\" -- env OPSAGENT_STATE_DIR=\"$STATE\" /usr/local/bin/ops key set api_key",
+		"runuser -u \"$SVC_USER\" -- env OPSAGENT_STATE_DIR=\"$STATE\" /usr/local/bin/ops _seed --provider 'deepseek' --model 'deepseek-chat'",
 		"usermod -aG \"$SVC_USER\" \"$SUDO_USER\"",
 		"systemctl enable opsagent.service",
 		// restart (not just enable --now) so re-running enroll actually

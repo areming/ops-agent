@@ -218,6 +218,24 @@ func AddProfile(stateDir string, p Profile) (Profile, error) {
 	return p, nil
 }
 
+// UpsertProfile makes "add" idempotent: if a profile already matches p's
+// provider+model+base_url it is made active and returned (existed=true, so the
+// caller reseals its key — a key rotation); otherwise p is added (existed=false).
+func UpsertProfile(stateDir string, p Profile) (Profile, bool, error) {
+	fc := loadFileConfig(stateDir)
+	for _, e := range fc.Models {
+		if e.Provider == p.Provider && e.Model == p.Model && e.BaseURL == p.BaseURL {
+			fc.Active = e.ID
+			if err := saveFileConfig(stateDir, fc); err != nil {
+				return Profile{}, false, err
+			}
+			return e.toProfile(), true, nil
+		}
+	}
+	added, err := AddProfile(stateDir, p)
+	return added, false, err
+}
+
 // SetActive marks id active and persists. It errors if id is unknown.
 func SetActive(stateDir, id string) error {
 	fc := loadFileConfig(stateDir)

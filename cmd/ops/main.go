@@ -68,6 +68,8 @@ func main() {
 		err = runFanOut(args)
 	case "_bridge":
 		err = runBridge(args)
+	case "_seed":
+		err = runSeed(args)
 	case "key":
 		err = runKey(args)
 	case "enroll":
@@ -340,6 +342,29 @@ func runBridge(args []string) error {
 	return transport.Bridge(resolveSocket(*socket))
 }
 
+// runSeed writes the enrolled host's initial model profile into config.json and
+// seals its API key (read from stdin). Internal: enroll runs it as the service
+// user during bootstrap so the daemon's config.json — not the systemd unit — is
+// the source of truth for the active model.
+func runSeed(args []string) error {
+	fs := flag.NewFlagSet("_seed", flag.ExitOnError)
+	provider := fs.String("provider", "", "model provider")
+	modelName := fs.String("model", "", "model name")
+	baseURL := fs.String("base-url", "", "optional API base URL")
+	_ = fs.Parse(args)
+	if *provider == "" {
+		return fmt.Errorf("_seed: --provider required")
+	}
+	apiKey, err := readSecret("模型 API key")
+	if err != nil {
+		return err
+	}
+	if apiKey == "" {
+		return fmt.Errorf("_seed: empty API key")
+	}
+	return cli.Seed(*provider, *modelName, *baseURL, apiKey)
+}
+
 // resolveSocket falls back to the fixed service path on Linux (where enroll
 // installs the agent) and a temp path elsewhere for development. serve and
 // _bridge share this default so an enrolled `connect <host>` needs no flag.
@@ -373,5 +398,6 @@ usage:
   ops logs [-n N] [--db PATH]    show the audit trail
   ops todos [--db PATH]          show open self-heal todos
   ops _bridge [--socket PATH]    (internal; invoked over SSH)
+  ops _seed [flags]              (internal; invoked by enroll to seed config.json)
 `)
 }

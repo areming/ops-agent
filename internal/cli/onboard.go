@@ -38,25 +38,47 @@ func onboardLocal() error {
 }
 
 // persistLocalConfig saves the model selection as a profile and seals its API
-// key under the profile's own keystore entry, so the next config.Load picks
-// the choice up. On a seal failure it rolls back the profile so the list never
-// points at a missing key.
+// key, so the next config.Load picks the choice up.
 func persistLocalConfig(provider, modelName, baseURL, label, apiKey string) error {
+	_, err := saveModelProfile(label, provider, modelName, baseURL, apiKey)
+	return err
+}
+
+// saveModelProfile upserts a model profile and seals its API key under the
+// profile's keystore entry (so re-adding the same provider/model rotates its
+// key rather than duplicating). On a seal failure it rolls back a freshly
+// added profile so config.json never points at a missing key.
+func saveModelProfile(label, provider, modelName, baseURL, apiKey string) (config.Profile, error) {
 	cfg := config.Load()
-	stored, err := config.AddProfile(cfg.StateDir, config.Profile{
+	stored, existed, err := config.UpsertProfile(cfg.StateDir, config.Profile{
 		Label: label, Provider: provider, Model: modelName, BaseURL: baseURL,
 	})
 	if err != nil {
-		return err
+		return config.Profile{}, err
 	}
 	ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath)
 	if err != nil {
-		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
-		return err
+		if !existed {
+			_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		}
+		return config.Profile{}, err
 	}
 	if err := ks.Set(stored.KeyRef, apiKey); err != nil {
-		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
-		return err
+		if !existed {
+			_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		}
+		return config.Profile{}, err
 	}
-	return nil
+	return stored, nil
+}
+
+// Seed writes an enrolled host's initial model profile into config.json and
+// seals its key. enroll runs it (as the service user, via `ops _seed`) so the
+// daemon's config.json — not the systemd unit — is the source of truth for the
+// active model, which lets an in-session /model switch persist across restart.
+// It is idempotent (see saveModelProfile): re-running enroll reseals/activates
+// the matching profile instead of piling up duplicates.
+func Seed(provider, modelName, baseURL, apiKey string) error {
+	_, err := saveModelProfile("", provider, modelName, baseURL, apiKey)
+	return err
 }

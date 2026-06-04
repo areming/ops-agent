@@ -174,42 +174,25 @@ Precedence is **environment variable > `config.json` (under StateDir) > built-in
 
 The full list (state/db/knowledge paths, etc.) is in [ONBOARDING.md](ONBOARDING.md) §5.
 
-### Rotating the key / switching providers
+### Rotating the key / switching providers / adding models
 
-ops has a **single active provider** at a time (the diagnosis model reuses its key by default), and the key is stored in the keystore under the fixed name `api_key`.
+Models are managed as **profiles**; each profile's key is encrypted separately in the keystore (under a per-profile entry name, no longer a fixed `api_key`). Day-to-day add/switch/delete all happen in the `/model` panel — no file editing.
 
-**① The key stopped working (expired/quota/revoked), same provider**
+**① Rotate a key, switch provider, or add a model — all via the `/model` panel**
 
-Local (`ops` on your own machine):
+`/model` opens the panel: `↑/↓`+Enter switch between saved profiles, `d` deletes, the last row "+ add model…" configures a new one (pick provider → model → fill base URL/key). **Rotating a key is just "add" a profile with the same provider/model and the new key** — it updates that profile's key in place (no duplicate) and switches to it. Adds/updates take effect — and **persist** — for the local session and for a remote daemon reached via `ops connect <host>` (the key travels the SSH-tunneled channel, and the daemon writes it into its own `config.json`/keystore, surviving restarts).
 
-```bash
-echo "$NEW_KEY" | ops key set api_key    # or: ops key set api_key, then paste + Ctrl-D
-```
+**② Or re-run enroll remotely (idempotent)**
 
-Effective on the next `ops` run (each local run is a fresh process).
-
-Remote (an enrolled host running under systemd) — the running daemon read the key at startup, so a restart is needed to reload. Easiest is to re-run enroll from your machine (idempotent; rotates the key and restarts):
+To (re)seed the first profile or script a key rotation:
 
 ```bash
-echo "$NEW_KEY" | ops enroll <host> --provider <same provider> --model <same model>
+echo "$ANTHROPIC_KEY" | ops enroll <host> --provider anthropic --model claude-... [--base-url ...]
 ```
 
-Or on the host manually:
+enroll seeds the model profile into the daemon's `config.json` (it no longer pins `OPSAGENT_PROVIDER`/`OPSAGENT_MODEL` in the systemd unit); a matching provider/model updates the key in place, a different one is added and made active.
 
-```bash
-sudo runuser -u opsagent -- env OPSAGENT_STATE_DIR=/var/lib/opsagent ops key set api_key
-sudo systemctl restart opsagent
-```
-
-**② Switch / add a new provider**
-
-Open the model panel with `/model`; its last row "+ add model…" configures a **new provider/model profile** (pick provider → model → fill base URL/key) and switches to it; `d` deletes a profile, `↑/↓`+Enter switch between saved ones. Each new key is encrypted per-profile in the keystore — no file editing. This works for the local session and for a remote daemon reached via `ops connect <host>` (the key travels the SSH-tunneled channel and the daemon seals it).
-
-> **Note (enrolled hosts)**: enroll currently writes `OPSAGENT_PROVIDER` (and `OPSAGENT_MODEL` when `--model` is given) into the systemd unit's `Environment=`, which **overrides `config.json`** by precedence. So a panel switch/add on an enrolled remote takes effect for the session but the active model is **reverted to the unit's env after a restart**. To make a remote profile choice durable today, re-run enroll (a later release will have enroll seed profiles into the daemon's config.json and stop pinning env):
->
-> ```bash
-> echo "$ANTHROPIC_KEY" | ops enroll <host> --provider anthropic --model claude-... [--base-url ...]
-> ```
+> **Note (hosts enrolled with an older release)**: a unit written by v0.0.15 or earlier still pins `OPSAGENT_*`, which **overrides `config.json`**, so a panel switch reverts on restart there — **re-run enroll** with a new `ops` (v0.0.16+) to migrate it (drops the env pin, seeds config.json). `OPSAGENT_*` env vars remain available as a temporary override.
 
 ## Development
 

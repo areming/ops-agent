@@ -322,7 +322,7 @@ func (srv *server) modelAdd(arg string) (string, error) {
 	cfg := srv.cfg
 	srv.mu.Unlock()
 
-	stored, err := config.AddProfile(cfg.StateDir, config.Profile{
+	stored, existed, err := config.UpsertProfile(cfg.StateDir, config.Profile{
 		Label: req.Label, Provider: req.Provider, Model: req.Model, BaseURL: req.BaseURL,
 	})
 	if err != nil {
@@ -330,15 +330,22 @@ func (srv *server) modelAdd(arg string) (string, error) {
 	}
 	ks, err := secret.Open(cfg.KeystorePath, cfg.MasterKeyPath)
 	if err != nil {
-		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		if !existed {
+			_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		}
 		return "", err
 	}
 	if err := ks.Set(stored.KeyRef, req.Key); err != nil {
-		_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		if !existed {
+			_, _ = config.DeleteProfile(cfg.StateDir, stored.ID)
+		}
 		return "", err
 	}
 	if err := srv.reloadActive(); err != nil {
 		return "", err
+	}
+	if existed {
+		return "已更新并切换 → " + stored.Label, nil
 	}
 	return "已添加并切换 → " + stored.Label, nil
 }
