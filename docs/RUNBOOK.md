@@ -26,8 +26,12 @@ OPSAGENT_API_KEY=sk-xxx \
 ./ops connect --local /tmp/opsagent.sock
 ```
 
-直接 `./ops`（无参）会走 `RunLocal()`：在进程内起 agent + 用 `net.Pipe()` 连接，无需 serve。
-未配置时自动进入引导（onboardLocal），配置落 `~/.config/opsagent/config.json`（Linux/Mac）。
+直接 `./ops`（无参）走 `RunLocal()`，先探测本机常驻 daemon 的 socket（`/run/opsagent/agent.sock`，仅 Linux）：
+
+- **可连** → 接管该 daemon（复用其模型/记忆/巡检），等价于 `connect --local`。
+- **unit 已装但没在跑** → 提示 `sudo systemctl start opsagent`，不重复引导。
+- **无权访问 socket（EACCES）** → 提示重新登录使 `opsagent` 组生效（或 `sudo ops`），不重复引导。
+- **没有常驻 daemon**（笔记本、未 enroll，或非 Linux）→ 走 `runLocalSession()`：进程内起 agent + `net.Pipe()` 连接，无需 serve；未配置时自动进入引导（`onboardLocal`），配置落 `~/.config/opsagent/config.json`（Linux/Mac）、`%AppData%\opsagent\config.json`（Windows）。
 
 ## 本地测试
 
@@ -69,7 +73,7 @@ ops connect web1
 **README 没说但实际需要做的事**：
 
 - Windows 上运行 `install.ps1` 会启用 ssh-agent 服务并把 `ops` 放进 PATH，之后才能免密 SSH（不装直接用会报 agent 错误）。
-- 第一次 `enroll` 后需重新登录（或 `newgrp opsagent`）让新增的 `opsagent` 组生效，才能 `connect --local`。
+- 第一次 `enroll` 后需重新登录（或 `newgrp opsagent`）让新增的 `opsagent` 组生效，之后在该机器上直接敲 `ops`（或 `connect --local`）即可连上常驻 agent。
 - `ops connect <host>` 如果目标机没有 `ops` 二进制，会提示是否自动安装——选是会从 GitHub Release 拉对应版本（版本是 `"dev"` 时不触发远程拉取，需先 `build.ps1`）。
 - 跳板机场景必须先配好 `~/.ssh/config` ProxyJump，`ops` 本身不处理跳板逻辑（完全委托给本地 `ssh` 命令）。
 

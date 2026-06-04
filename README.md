@@ -136,15 +136,17 @@ echo "$DEEPSEEK_KEY" | ops enroll web1 --provider deepseek --model deepseek-chat
 ## 使用
 
 ```bash
-ops                                      # 本地对话（未配置则先引导）；对话内 /help 看命令
+ops                                      # 在已部署的机器上直接敲：自动接管本机常驻 agent（复用其模型/记忆/巡检）；
+                                         # 未部署的机器上则是本地对话（未配置先引导）。对话内 /help 看命令
 ops connect <host>                       # 从本地开一段对话（SSH）
-ops connect --local /run/opsagent/agent.sock  # 在服务器上直接对话（无需 SSH；用户需在 opsagent 组）
 ops run -c "<指令>" <host>... [--yes]    # 批量：一条指令并发跑多台
 ops logs [-n N]                          # 审计轨迹（含 source: chat/patrol）
 ops todos                                # 巡检/自愈待办
 ops key set <name>                       # 存密钥（值从 stdin 读）
 ops key list
 ```
+
+> **一机一脑**：每台机器只有一个常驻 agent，模型/key/记忆/审计/巡检都在它那里。在已 enroll 的机器上，无论从本地 `ops connect <host>`，还是登录上去直接敲 `ops`，连的都是同一个 daemon——不会重新引导配置。首次若提示无权访问 socket，重新登录一次让 `opsagent` 组生效即可（或临时 `newgrp opsagent` / `sudo ops`）。
 
 对话里支持 `/命令`（对齐常见 CLI）：`/models [名称]` 看/切当前会话所连机器的模型、`/logs [N]` 看操作日志、`/clear` 清空当前对话、`/help`、`/quit`。
 

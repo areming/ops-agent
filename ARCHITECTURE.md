@@ -209,10 +209,15 @@ type Frame struct {
 }
 ```
 
+### 入口与「一机一脑」
+
+一台机器只有一个常驻 agent（`ops serve` daemon），它是该机模型 / key / 记忆 / 审计 / 巡检的**唯一事实来源**。所有入口都只是连到它的瘦客户端：远端 `ops connect <host>` 经 SSH 把 stdio 桥到它的 unix socket；在该机本地直接敲 `ops` 也会探测并**接管同一个 daemon**（socket 装了没跑 / 无权访问时，分别提示起服务、重新登录使 `opsagent` 组生效，**绝不另起第二个会话重复引导**）。只有没有常驻 daemon 的机器（笔记本、未 enroll，或非 Linux）裸 `ops` 才退化成进程内的独立本地会话。服务配置随服务身份走（`opsagent` 用户 + `/var/lib/opsagent` + systemd unit 注入的 `OPSAGENT_*`），登录用户经 socket 借用 daemon 的配置，自身无需任何配置。
+
 ### CLI 子命令（对你的接口）
 | 命令 | 作用 |
 |---|---|
-| `ops setup` / `ops` | 引导式部署向导 / 本地对话（未配置先引导） |
+| `ops` | 本机有常驻 agent 则接管它；否则本地对话（未配置先引导）。见上「一机一脑」 |
+| `ops setup` | 引导式部署向导 |
 | `ops enroll <host>` | 一键部署：传二进制、建专用用户、写 sudoers 白名单、装 systemd、初始化配置 |
 | `ops connect <host>` | 连上某台 agent 对话（日常主入口） |
 | `ops serve` | 在服务器上以常驻 agent 运行（由 systemd 拉起） |

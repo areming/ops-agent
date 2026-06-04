@@ -136,15 +136,18 @@ Main `enroll` flags: `--provider` (default `deepseek`), `--model`, `--base-url`,
 ## Usage
 
 ```bash
-ops                                         # local conversation (onboards if unconfigured); /help for commands
+ops                                         # on a deployed machine: attaches to its resident agent (reusing its
+                                            # model/memory/patrol); on an un-deployed machine: a local conversation
+                                            # (onboards if unconfigured). /help for commands
 ops connect <host>                          # open a conversation from your laptop (SSH)
-ops connect --local /run/opsagent/agent.sock # on the server itself (no SSH; user must be in the opsagent group)
 ops run -c "<instruction>" <host>... [--yes] # fan-out: one instruction across hosts
 ops logs [-n N]                             # audit trail (with source: chat/patrol)
 ops todos                                   # patrol / self-heal todos
 ops key set <name>                          # store a secret (value read from stdin)
 ops key list
 ```
+
+> **One server, one brain**: each machine has a single resident agent that holds its model, key, memory, audit and patrol. On a deployed machine, whether you `ops connect <host>` from your laptop or log in and just type `ops`, you reach the same daemon — no re-onboarding. If the first run reports it can't access the socket, log in again so your `opsagent` group membership applies (or use `newgrp opsagent` / `sudo ops`).
 
 Inside a conversation, slash commands (matching common CLIs): `/models [name]` view/switch the model of the machine this session talks to, `/logs [N]` view the audit trail, `/clear` reset the current conversation, `/help`, `/quit`.
 

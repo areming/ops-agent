@@ -47,11 +47,11 @@ internal/
 ## 4. 常用命令
 
 ```
-ops                                         本地对话；未配置则先引导（选 provider/模型 + 填 key）
+ops                                         在已部署机器上接管本机常驻 agent；未部署则本地对话（未配置先引导）
 ops setup                                   引导式向导：问答 + 自动前置检查 + 部署（推荐首次用）
 ops enroll <host> [flags]                   一条命令部署到 Linux 机（API key 从 stdin 读）
 ops connect <host>                          从本地开一段对话（SSH）
-ops connect --local <socket>                直连本地 socket（开发，或在服务器上：--local /run/opsagent/agent.sock）
+ops connect --local <socket>                直连指定本地 socket（开发用；服务器上日常直接敲 ops 即可）
 ops run -c "<指令>" <host>... [--yes]       批量：一条指令并发跑多台（见 §6）
 ops serve [--socket PATH]                   常驻 daemon
 ops key set <name>                          存密钥（值从 stdin 读，不进 shell history）

@@ -45,8 +45,9 @@ func main() {
 			}
 			return
 		}
-		// Bare `ops` opens a local conversation (onboarding first if the
-		// machine has no model configured yet).
+		// Bare `ops` attaches to this machine's resident agent if one is
+		// installed; otherwise it opens a standalone local conversation
+		// (onboarding first if the machine has no model configured yet).
 		if err := cli.RunLocal(); err != nil {
 			fmt.Fprintf(os.Stderr, "ops: %v\n", err)
 			os.Exit(1)
@@ -356,7 +357,8 @@ func usage() {
 	fmt.Fprint(os.Stderr, `ops — lightweight ops assistant
 
 usage:
-  ops                            open a local conversation (onboards if unconfigured)
+  ops                            talk to this machine's resident agent if one is installed;
+                                 otherwise open a local conversation (onboards if unconfigured)
   ops setup                      guided first-time deploy (interactive)
   ops connect <host>             connect to a host (auto-installs if missing, offers an update if one exists)
   ops connect <host> [--socket REMOTE_PATH] [--bin REMOTE_BIN]

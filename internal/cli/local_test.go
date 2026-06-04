@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"testing"
 
@@ -46,6 +48,31 @@ func TestConfiguredTrueWithEnvKey(t *testing.T) {
 	t.Setenv("OPSAGENT_API_KEY", "sk-test")
 	if !configured() {
 		t.Fatal("configured() = false with model + env key, want true")
+	}
+}
+
+func TestClassifyResident(t *testing.T) {
+	// A connection refused / no socket file looks like this to transport.Dial.
+	notRunning := &fs.PathError{Op: "dial", Path: "/run/opsagent/agent.sock", Err: errors.New("connect: no such file or directory")}
+
+	tests := []struct {
+		name      string
+		dialErr   error
+		unitThere bool
+		want      residentAction
+	}{
+		{"socket dialable → attach", nil, true, residentAttach},
+		{"socket dialable, no unit → attach", nil, false, residentAttach},
+		{"permission denied → guide to group/sudo", fs.ErrPermission, true, residentDenied},
+		{"unreachable but unit installed → service down", notRunning, true, residentServiceDown},
+		{"unreachable and no unit → standalone session", notRunning, false, residentNone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyResident(tt.dialErr, tt.unitThere); got != tt.want {
+				t.Errorf("classifyResident(%v, %v) = %d, want %d", tt.dialErr, tt.unitThere, got, tt.want)
+			}
+		})
 	}
 }
 

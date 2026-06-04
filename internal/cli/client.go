@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -177,15 +178,24 @@ func promptYesNo(label string) bool {
 }
 
 // ConnectLocal dials the agent socket directly on the same machine.
-// Used for development verification without SSH.
+// Used for development verification without SSH (`connect --local <socket>`).
 func ConnectLocal(socketPath string) error {
 	nc, err := transport.Dial(socketPath)
 	if err != nil {
 		return err
 	}
+	return replOverConn(nc, "local", "local")
+}
+
+// replOverConn runs the client REPL over an already-dialed connection: it
+// prints the connect banner (labeled bannerHost) and tags the prompt with
+// label, then closes nc on return. Shared by `connect --local` and the
+// bare-`ops` attach to a machine's resident agent, so both reach the same
+// daemon through one code path.
+func replOverConn(nc net.Conn, bannerHost, label string) error {
 	defer nc.Close()
-	printConnectBanner("local", version.Value)
-	return repl(transport.NewConn(nc), "local")
+	printConnectBanner(bannerHost, version.Value)
+	return repl(transport.NewConn(nc), label)
 }
 
 // ConnectSSH runs `ops _bridge` on host over SSH and speaks the
