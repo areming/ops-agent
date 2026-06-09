@@ -10,6 +10,8 @@
 
 **M8 自定义命令 + 执行动效已提交并推送 `main`（`ea802bc` + `e4ed947`，2026-06-09）**：两个用户反馈驱动的小特性，代码 + 离线验收（全测试/vet/gofmt 干净、交叉编译 amd64/arm64 仍 statically linked）通过。详见决策日志 2026-06-09 与下方 M8 小节。**待 live 验收（需 Linux 机 + 真模型）**：① agent 的 `commands/` 放个 `*.md` → `/commands` 列出 → `/<名称>` 触发跑通一轮（确认 + audit 照常）；② 长命令运行 / 轮次间观察状态行（`⠹ 执行中… 8s`），确认不再像卡死。**未动 enroll**：commands 目录开箱即读，但 enroll 暂不代种示例命令（同 knowledge，留作部署后手动一步）。
 
+**M8-③ 命令目录可发现 + Tab 补全已提交 `main`、未 push（`7872a6e` 修复 + `ec9135c` 补全，2026-06-09）**：live 验收发现「文件放进去 `/commands` 仍列空」其实是放错目录（两条 local 路径目录不同），修法是让 `/commands` 报出 agent 真实读取的目录绝对路径；同时按用户反馈加了 `/命令` 名 Tab 补全（内置+自定义）。详见 M8 小节 ③ 与决策日志 2026-06-09 M8-③。**待 push + live 复验**。
+
 ---
 
 **CLI 引导重构 + 文档纠错已提交 `main`（`1b72ea1` 起）**：onboarding 与部署向导统一成上下键菜单，新增 provider 目录（13 家 + 自定义，base URL/在售模型预填），API key 改掩码回显（露头尾）；同批校正了 README / ONBOARDING / ARCHITECTURE / TECH_STACK / ROADMAP / RUNBOOK 的命名与设计漂移（详见决策日志 2026-06-03）。发 `v0.0.13`。下一步：真机走一遍引导确认渲染，按需补 live 验收。
@@ -203,6 +205,16 @@ M5 已做（巡检 + 自愈）：
 
 文档已同步：README（`/命令` 行 + 自定义命令小节 + `OPSAGENT_COMMANDS_DIR`）、ARCHITECTURE（§3.2.1 自定义命令、帧列表加 RunCommand/ToolOutput、目录树 memory 加 commands）。
 
+#### ③ live 验收补强：命令目录可发现 + Tab 补全　🟡（代码+离线验收过，已提交 `main`，待 push + live 复验）
+两特性改的文件不交叉，按特性分两个 commit（`7872a6e` 修复 / `ec9135c` 补全）。
+
+- [x] **BUG-016 修复**（`7872a6e`，live 验收发现）：放进 `/var/lib/opsagent/commands/` 的 `*.md`，裸 `ops`（`[local]`）`/commands` 列空、`/<名称>` 报「未知命令」。根因**不是 loader**——错误文案正是 agent 端 `runCommandTurn` 输出，帧到达了 agent；是裸 `ops` 两条路径（接管常驻 daemon vs 进程内会话，见决策日志「2026-06-04 一机一脑」）`CommandsDir` 不同（daemon=`/var/lib/opsagent/commands`，进程内=登录用户 `defaultStateDir()` 下的 `commands`），而操作者/模型无从得知应答 agent 实际读哪个目录，文件落错目录就静默不加载。修：`CommandListReply` 加 `Dir`；`commandList` 填 `srv.commandsDir()`；`printCommands` 空态+列表态都打印真实绝对路径，并说明"重开 ops 即自动读取"。（BUGS.md BUG-016，gitignore 本地档案不入库。）
+- [x] **Tab 命令补全**（`ec9135c`，用户反馈）：raw REPL 行编辑器加 `keyTab`，仅 `/` 开头且无空格（补命令名而非参数）时生效；候选 = 内置命令 + 自定义命令（按 Tab 经控制帧**实时拉**，新加的 `*.md` 也补）；0 匹配下方提示「无匹配命令」（即时告知敲错/无此命令）、1 匹配补全+空格、多匹配补公共前缀/补不动则列出候选并重画提示行。纯函数 `completeCommand`+`longestCommonPrefix`（**逐 rune**，CJK 名不切坏）。`/help` 加 Tab 提示行。cooked 路径（非 TTY）逐行读拦不到 Tab，不做。
+- [x] 测试：`completeCommand`（7 场景）、`lineEditor.complete`（5 场景：唯一补全+空格/多匹配列出/无匹配提示/参数内 inert）、`keyTab` 解码用例。
+- [x] 离线验收：全测试/vet/gofmt 干净；两特性各自独立可编译（提交前 stash 验证）。
+- [ ] 待 push（用户尚未要求推送）。
+- [ ] live 复验：放 `*.md` 进 `/commands` 报出的**真实目录** → `/<名称>` 触发跑通；`/<前缀><Tab>` 补全、`/不存在<Tab>` 提示无匹配。
+
 ### 跨里程碑待办
 - [ ] M0 SSH 路径 live 验收（需你那台 Linux 机器）——将随 M4 enroll/connect live 验收一并跑通
 - [ ] 依赖决策待点头：bubbletea(M6) / TOML(M6)　（SQLite(M2)、x/crypto secretbox(M3) 已批准并落地）
@@ -279,4 +291,5 @@ M5 已做（巡检 + 自愈）：
 - **2026-06-04 模型档案 + `/model` 面板（Phase 1 已做）**：把「一机一个活跃模型」升级成「档案列表 + 活跃指针」。**1a 后端**：`config.json` 改 `{active, models[]}`（每档案 provider/model/base_url + `key_ref`），`config.ListProfiles/AddProfile/SetActive/DeleteProfile`，Load 解析活跃档案并暴露 `KeyRef`，移除扁平 `Save`；老扁平 config.json 自动迁移成 `default` 档案（仍指 `api_key`，升级零重输）。`secret.Keystore.Delete`。`transport` 加 `model.list/switch/add/delete` 控制载荷（JSON 走 Arg/Text，不加帧类型；add 带 key 由 daemon 入库）。`agent` 四 handler + `resolveAPIKey` 读 `KeyRef`，删 `formatModelList`。删冗余 `model.KnownModels`（过时、按 adapter 取会显示错牌子）。提交 `1c51b74`。**1b 客户端**：`/model` 在 raw 路径开交互面板（建在现有 `keys` 事件通道上——stdin 被 key-reader 独占，不能直读；菜单/文本输入复用 keyEvent，新增 `keysMenu`/`keysReadLine`，「新增」复用 `providerCatalog`），cooked 路径退化为文本列表 + `/model <名称>` 切换；抽 `controlRoundTrip`（conn/frames 两实现）去重 `sendControl`/`sendControlRaw`；onboard 改写一个档案。Phase 1 不碰 enroll/unit——enrolled 远端 env 仍覆盖，切换/新增当次生效但重启还原（Phase 2 改 enroll 停钉 env + 种 config.json）。
 - **2026-06-09 M8-① 自定义命令机制（已定）**：命令存 **agent 侧**（`StateDir/commands/*.md`，同模型/记忆/knowledge），本地与 `connect <host>` 远端会话都生效；客户端保持瘦客户端、不解析命令定义。触发选 **开一整轮**（新帧 `RunCommand`，非 `ControlRequest` 单条回复）——把命令正文注入成本轮 user 输入跑正常 `chatTurn`，于是工具/安全闸门/确认/审计**一律照旧、命令不绕过任何安全机制**；shell 与自然语言因此统一成「模型读定义后执行」，天然满足用户「模型了解要做什么 + 操作空间」的诉求。每次触发重读目录（随放随用免重启）。**MVP 边界（明说）**：「操作空间」靠定义文本传达给模型，**不**做 per-command 强制只读/限定工具的硬隔离（要动 `safety/`，留作后续）；enroll 暂不代种示例命令（同 knowledge）。
 - **2026-06-09 M8-② 执行动效根因 + 方案（已定）**：用户反馈等待时界面像卡死。根因不是缺 spinner，而是 spinner 生命周期——每个 frame 到达即停、只有 `ToolStart` 重启，命令静默期与轮次间思考期没有任何动画。raw 路径（真实交互）选**根因修法**：`drainRaw` 改用 select 内 `time.Ticker` 同步渲染状态行，与小窗口同一 goroutine 绘制，彻底避开「异步 spinner 与小窗口光标重绘竞争」（这正是原设计每帧停 spinner 的原因）；去抖 150ms 防流式出字时闪烁，`replyOpen` 期间不画防 `\r` 抹掉半句回复（复查时抓到的 bug）。cooked 路径（非 TTY 兜底，plain 模式无光标竞争）保留异步 spinner，仅做最小生命周期修复（`ToolOutput` 后重启）。状态行带「已等秒数」让静默也明显在走。零新依赖（stdlib `time`）。
+- **2026-06-09 M8-③ 命令目录可发现 + Tab 补全（已定）**：M8-① live 验收暴露可发现性缺口——文件放进 daemon 的 `/var/lib/opsagent/commands/`，但裸 `ops` 进程内会话读的是登录用户 `defaultStateDir()` 下的 `commands`，操作者/模型无从得知应答 agent 实际读哪个目录（两条路径见「2026-06-04 一机一脑」）。定：不去强行合并两条路径的目录（作用域隔离是有意的），而是**把真实目录暴露出来**——`/commands` 报 `CommandListReply.Dir`，空态+列表态都打印绝对路径，错位立刻可见可纠。Tab 补全：候选实时拉（含自定义命令），多匹配走 readline 风格「补公共前缀 + 列候选」、不做循环选中；只在 raw 模式做（cooked 逐行读拦不到 Tab）。**流程反馈（用户提出，已记忆）**：今后接到新功能先商讨方案 → 写进 TASK.md 立项 → 再按 Task 执行。
 - **2026-06-04 模型档案 Phase 2：远端真源（已做）**：让 enrolled 远端的档案选择重启后保持。`buildSystemdUnit` **去掉** `OPSAGENT_PROVIDER/MODEL/BASE_URL`（只留 `OPSAGENT_STATE_DIR` + 可选 `PATROL_SERVICES`/`DIAG_MODEL`——后两者属部署期运维设置，不是面板管的活跃模型）。`buildBootstrap` 把 `key set api_key` 换成新的内部命令 `ops _seed --provider/--model/--base-url`（key 仍 base64 经 stdin），以服务用户身份把首个档案写进 daemon 的 `config.json` + seal key（`cli.Seed` → `saveModelProfile`）。`_seed` 加进 `cmd/ops` 分发。**幂等**：抽 `config.UpsertProfile`（provider+model+base_url 命中则就地 reseal+激活、否则新增），enroll 重跑/面板「新增同款」都不再产生重复档案——**换 key = 新增同 provider/模型填新 key**（`agent.modelAdd` 也改用 UpsertProfile，回「已更新并切换」）。档案 key 一律 per-profile（`model.<id>.key`），不再有固定 `api_key`（迁移的 default 档案除外）。`enroll_test` 断言更新（unit 不含 provider/model、bootstrap 含 `_seed`），新增 `TestSeedIdempotent`。**迁移**：v0.0.15 及更早 enroll 的老机 unit 仍钉 env、覆盖 config.json，需用 v0.0.16+ 重跑一次 enroll。文档全扫（README(.en) §换 key 重写、ONBOARDING §5、ARCHITECTURE）。**待 live 验收**：远端 `/model` 切换/新增重启后保持、老机重 enroll 迁移。
