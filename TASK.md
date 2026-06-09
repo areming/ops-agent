@@ -2,11 +2,15 @@
 
 > 唯一执行事实来源。设计见 REQUIREMENTS / TECH_STACK / ARCHITECTURE / ROADMAP（这些只讲设计，不记执行状态）。
 > 图例：✅ 完成并验证 ｜ 🟡 代码完成待验证/待提交 ｜ ⬜ 未开始
-> 最后更新：2026-06-03
+> 最后更新：2026-06-09
 
 ---
 
 ## 下次会话从哪开始
+
+**M8 自定义命令 + 执行动效已提交并推送 `main`（`ea802bc` + `e4ed947`，2026-06-09）**：两个用户反馈驱动的小特性，代码 + 离线验收（全测试/vet/gofmt 干净、交叉编译 amd64/arm64 仍 statically linked）通过。详见决策日志 2026-06-09 与下方 M8 小节。**待 live 验收（需 Linux 机 + 真模型）**：① agent 的 `commands/` 放个 `*.md` → `/commands` 列出 → `/<名称>` 触发跑通一轮（确认 + audit 照常）；② 长命令运行 / 轮次间观察状态行（`⠹ 执行中… 8s`），确认不再像卡死。**未动 enroll**：commands 目录开箱即读，但 enroll 暂不代种示例命令（同 knowledge，留作部署后手动一步）。
+
+---
 
 **CLI 引导重构 + 文档纠错已提交 `main`（`1b72ea1` 起）**：onboarding 与部署向导统一成上下键菜单，新增 provider 目录（13 家 + 自定义，base URL/在售模型预填），API key 改掩码回显（露头尾）；同批校正了 README / ONBOARDING / ARCHITECTURE / TECH_STACK / ROADMAP / RUNBOOK 的命名与设计漂移（详见决策日志 2026-06-03）。发 `v0.0.13`。下一步：真机走一遍引导确认渲染，按需补 live 验收。
 
@@ -176,6 +180,29 @@ M5 已做（巡检 + 自愈）：
 - [x] release `v0.0.9`（2026-05-31）：含 M7 后续 CLI 体验打磨（欢迎页机器人吉祥物 + truecolor、对话样式 `⏺` 标记+留白、`/exit`·`/model` 对齐 claude、`NO_COLOR`/`COLORTERM`/`WT_SESSION` 上色 gate，零新依赖）。release workflow 出包就绪
 - [ ] live 验收：①干净机 `ops`→引导→对话；②会话内 `/models` 切换重启仍生效、`/logs`、`/clear`；③干净机 `ops connect <host>`→确认→拉 release 装→进对话（v0.0.9 已出包）；④老机重 enroll 后 `opsagent` 软链可用
 
+### M8 — 自定义命令 + 执行动效（用户反馈驱动）　🟡（代码+离线验收过，已提交推送，待 live 验收）
+两个小特性，分两个 commit（`ea802bc` 特性 1 / `e4ed947` 特性 2，已 push main）。
+
+#### ① 自定义命令 `/<名称>`　✅ 已提交（`ea802bc`）
+- [x] `memory/commands.go`：`*.md` 加载 + 极简 frontmatter（`name`/`description` + 正文）解析，仿 `knowledge.go`；`LoadCommands`/`FindCommand`。缺正文跳过、缺 frontmatter 整体作正文（裸脚本可用）。
+- [x] `config.go`：`OPSAGENT_COMMANDS_DIR`，默认 `StateDir/commands`。
+- [x] `transport`：新帧 `TypeRunCommand`（`RunCommandPayload{Name,Args}`）——开一整轮而非单条 control 回复；`CmdCommandList` + `CommandListReply`/`CommandInfo`。
+- [x] `agent/commands.go` + `daemon.go`：`runCommandTurn` 每次重读目录（随放随用免重启）→ 命中则 `buildCommandPrompt`（框架说明 + 正文 + 附加参数）注入成本轮 user 输入 → 跑正常 `chatTurn`（工具/安全闸门/确认/审计**照旧、不绕过**）；未命中 → Error + Done 干净返回。`handleControl` 加 `command.list`。
+- [x] `cli/customcmd.go` + `client.go`/`repl_raw.go`：非内置 `/xxx` 转发 RunCommand 后 drain；新增 `/commands`(`/cmds`) 列表、`/help` 末尾追加自定义命令、help 文案更新；`handleSlash` 签名加 `in *bufio.Scanner`（cooked 路径 drain 需要）。
+- [x] 测试：commands 解析/加载/Find（含 crlf、未闭合 fence、desc 别名、缺目录）、`buildCommandPrompt`、`runCommandTurn`（命中跑轮+注入校验 / 未知名 Error+Done+不动 session）、`commandList` JSON、`printCommands`（描述/无描述/空/quiet）。
+- [x] 离线验收：全测试/vet/gofmt 干净、交叉编译 amd64/arm64 statically linked。
+- [ ] live 验收：放 `*.md` → `/commands` 列出 → `/<名称>` 触发跑通一轮（含确认 + audit）。
+
+#### ② 执行动效（消除"死机感"）　✅ 已提交（`e4ed947`）
+- [x] 根因：原 spinner 每个 frame 到达即停、只有 `ToolStart` 重启 → 命令静默期 + 轮次间思考期无动画。
+- [x] raw 路径（真实交互）：`drainRaw` 改用 select 内 `time.Ticker` 同步渲染状态行（spinner + 思考中/执行中 + 已等秒数），与小窗口同 goroutine 绘制避开光标竞争；去抖 150ms、`replyOpen` 期间不画（不打断流式回复，复查时抓到并修了这个会抹半句回复的 bug）；状态行落小窗口下一行或独立行。
+- [x] cooked 路径（非 TTY 兜底）：最小生命周期修复，`ToolOutput` 后重启 spinner 让静默期也动；spinner 计时复用纯函数 `statusBody`。
+- [x] 测试：`statusBody`（亚秒只显标签 / 过秒显计时）、`TestDrainRawAnimatesDuringSilentGap`（ToolStart 后静默 → 确实出现"执行中"）；`TestDrainRawEscSendsCancel` 无回归。
+- [x] 离线验收：全测试/vet/gofmt 干净、交叉编译 amd64/arm64 statically linked。
+- [ ] live 验收：长命令运行 / 轮次间状态行可见、不再像卡死。
+
+文档已同步：README（`/命令` 行 + 自定义命令小节 + `OPSAGENT_COMMANDS_DIR`）、ARCHITECTURE（§3.2.1 自定义命令、帧列表加 RunCommand/ToolOutput、目录树 memory 加 commands）。
+
 ### 跨里程碑待办
 - [ ] M0 SSH 路径 live 验收（需你那台 Linux 机器）——将随 M4 enroll/connect live 验收一并跑通
 - [ ] 依赖决策待点头：bubbletea(M6) / TOML(M6)　（SQLite(M2)、x/crypto secretbox(M3) 已批准并落地）
@@ -250,4 +277,6 @@ M5 已做（巡检 + 自愈）：
 - **2026-06-03 发版 v0.0.13（已发）**：含上述 CLI 引导重构 + 文档纠错。tag 推送触发 `.github/workflows/release.yml` 出 linux-amd64/arm64 + windows-amd64 + SHA256SUMS。
 - **2026-06-04 一机一脑 / 裸 `ops` 接管常驻 agent（已做）**：修「已 enroll 机器裸 `ops` 重复引导」——原会另起进程内会话、读登录用户的空配置（`$HOME/.config/opsagent`），重复引导出与巡检 daemon 无关的第二大脑。改 `RunLocal`：Linux 上先探测常驻 daemon socket（`/run/opsagent/agent.sock`），纯函数 `classifyResident(dialErr, unitInstalled)` 四分流——可连即**接管**（复用 daemon 的模型/记忆/巡检，复用 `replOverConn`，等价 `connect --local`）；EACCES → 提示加 `opsagent` 组重登 / `sudo ops`；unit 装了没跑 → 提示 `systemctl start`；都不命中（无 daemon / 非 Linux）才走 `runLocalSession`（原进程内会话 + 引导）。**原则**：一台机器只有一个常驻 agent，是该机配置/记忆/审计/巡检的唯一事实来源，所有入口只是连它的瘦客户端；登录用户经 socket 借 daemon 配置、自身零配置（**不回退** 2026-06-01 把 `defaultStateDir` 改 `UserConfigDir` 的作用域隔离）。顺手抽 `replOverConn` 消除 `ConnectLocal` 的重复 dial+banner+repl；`connect --local` flag 保留作 dev 逃生口，仅从用户文档撤宣传。新增 `TestClassifyResident`（四分支）。文档全扫：README(.en)/ONBOARDING/RUNBOOK/ARCHITECTURE/TASK 同步。
 - **2026-06-04 模型档案 + `/model` 面板（Phase 1 已做）**：把「一机一个活跃模型」升级成「档案列表 + 活跃指针」。**1a 后端**：`config.json` 改 `{active, models[]}`（每档案 provider/model/base_url + `key_ref`），`config.ListProfiles/AddProfile/SetActive/DeleteProfile`，Load 解析活跃档案并暴露 `KeyRef`，移除扁平 `Save`；老扁平 config.json 自动迁移成 `default` 档案（仍指 `api_key`，升级零重输）。`secret.Keystore.Delete`。`transport` 加 `model.list/switch/add/delete` 控制载荷（JSON 走 Arg/Text，不加帧类型；add 带 key 由 daemon 入库）。`agent` 四 handler + `resolveAPIKey` 读 `KeyRef`，删 `formatModelList`。删冗余 `model.KnownModels`（过时、按 adapter 取会显示错牌子）。提交 `1c51b74`。**1b 客户端**：`/model` 在 raw 路径开交互面板（建在现有 `keys` 事件通道上——stdin 被 key-reader 独占，不能直读；菜单/文本输入复用 keyEvent，新增 `keysMenu`/`keysReadLine`，「新增」复用 `providerCatalog`），cooked 路径退化为文本列表 + `/model <名称>` 切换；抽 `controlRoundTrip`（conn/frames 两实现）去重 `sendControl`/`sendControlRaw`；onboard 改写一个档案。Phase 1 不碰 enroll/unit——enrolled 远端 env 仍覆盖，切换/新增当次生效但重启还原（Phase 2 改 enroll 停钉 env + 种 config.json）。
+- **2026-06-09 M8-① 自定义命令机制（已定）**：命令存 **agent 侧**（`StateDir/commands/*.md`，同模型/记忆/knowledge），本地与 `connect <host>` 远端会话都生效；客户端保持瘦客户端、不解析命令定义。触发选 **开一整轮**（新帧 `RunCommand`，非 `ControlRequest` 单条回复）——把命令正文注入成本轮 user 输入跑正常 `chatTurn`，于是工具/安全闸门/确认/审计**一律照旧、命令不绕过任何安全机制**；shell 与自然语言因此统一成「模型读定义后执行」，天然满足用户「模型了解要做什么 + 操作空间」的诉求。每次触发重读目录（随放随用免重启）。**MVP 边界（明说）**：「操作空间」靠定义文本传达给模型，**不**做 per-command 强制只读/限定工具的硬隔离（要动 `safety/`，留作后续）；enroll 暂不代种示例命令（同 knowledge）。
+- **2026-06-09 M8-② 执行动效根因 + 方案（已定）**：用户反馈等待时界面像卡死。根因不是缺 spinner，而是 spinner 生命周期——每个 frame 到达即停、只有 `ToolStart` 重启，命令静默期与轮次间思考期没有任何动画。raw 路径（真实交互）选**根因修法**：`drainRaw` 改用 select 内 `time.Ticker` 同步渲染状态行，与小窗口同一 goroutine 绘制，彻底避开「异步 spinner 与小窗口光标重绘竞争」（这正是原设计每帧停 spinner 的原因）；去抖 150ms 防流式出字时闪烁，`replyOpen` 期间不画防 `\r` 抹掉半句回复（复查时抓到的 bug）。cooked 路径（非 TTY 兜底，plain 模式无光标竞争）保留异步 spinner，仅做最小生命周期修复（`ToolOutput` 后重启）。状态行带「已等秒数」让静默也明显在走。零新依赖（stdlib `time`）。
 - **2026-06-04 模型档案 Phase 2：远端真源（已做）**：让 enrolled 远端的档案选择重启后保持。`buildSystemdUnit` **去掉** `OPSAGENT_PROVIDER/MODEL/BASE_URL`（只留 `OPSAGENT_STATE_DIR` + 可选 `PATROL_SERVICES`/`DIAG_MODEL`——后两者属部署期运维设置，不是面板管的活跃模型）。`buildBootstrap` 把 `key set api_key` 换成新的内部命令 `ops _seed --provider/--model/--base-url`（key 仍 base64 经 stdin），以服务用户身份把首个档案写进 daemon 的 `config.json` + seal key（`cli.Seed` → `saveModelProfile`）。`_seed` 加进 `cmd/ops` 分发。**幂等**：抽 `config.UpsertProfile`（provider+model+base_url 命中则就地 reseal+激活、否则新增），enroll 重跑/面板「新增同款」都不再产生重复档案——**换 key = 新增同 provider/模型填新 key**（`agent.modelAdd` 也改用 UpsertProfile，回「已更新并切换」）。档案 key 一律 per-profile（`model.<id>.key`），不再有固定 `api_key`（迁移的 default 档案除外）。`enroll_test` 断言更新（unit 不含 provider/model、bootstrap 含 `_seed`），新增 `TestSeedIdempotent`。**迁移**：v0.0.15 及更早 enroll 的老机 unit 仍钉 env、覆盖 config.json，需用 v0.0.16+ 重跑一次 enroll。文档全扫（README(.en) §换 key 重写、ONBOARDING §5、ARCHITECTURE）。**待 live 验收**：远端 `/model` 切换/新增重启后保持、老机重 enroll 迁移。
