@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -79,14 +80,18 @@ func replRaw(conn *transport.Conn, label string) error {
 // Ctrl-C sends a Cancel frame and suppresses further output for the turn (the
 // agent still ends it with Done). Confirm prompts consume keys directly, so ESC
 // there means "deny" rather than "cancel the turn".
+//
+// A time.Ticker in the same select drives an animated status line (spinner +
+// phase + elapsed seconds) drawn from this one goroutine, so it never races the
+// live window's cursor math. It is debounced — shown only after a short quiet
+// gap — so it fills the silent waits (model thinking before the first token or
+// between tool rounds, a command running quietly) without flickering while text
+// streams or output pours in. The line sits below the live output window when
+// one is open, and on its own line otherwise.
 func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEvent, out io.Writer) error {
-	sp := startSpinner("思考中…")
-	stopSp := func() {
-		if sp != nil {
-			sp.stop()
-			sp = nil
-		}
-	}
+	ticker := time.NewTicker(spinnerInterval)
+	defer ticker.Stop()
+
 	var live *liveOutput
 	finishLive := func() {
 		if live != nil {
@@ -94,10 +99,41 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 			live = nil
 		}
 	}
+
+	spinIdx := 0
+	label := "思考中"             // "思考中" while waiting on the model, "执行中" while a tool runs
+	lastActivity := time.Now() // reset on every frame; the gap since drives the spinner
+	statusShown := false
+	clearStatus := func() {
+		if statusShown {
+			fmt.Fprint(out, "\r\x1b[K")
+			statusShown = false
+		}
+	}
+	// activity marks a frame arrival: erase any status line and restart the quiet
+	// timer, so the spinner only returns after the next genuine gap.
+	activity := func() {
+		clearStatus()
+		lastActivity = time.Now()
+	}
+
 	replyOpen := false
 	canceling := false
 	for {
 		select {
+		case <-ticker.C:
+			// Skip while assistant text is open: the cursor is mid-line, so the
+			// status line's \r would clobber the partial reply. The spinner is for
+			// the silent gaps (thinking before the first token / between rounds, a
+			// command running quietly) — all of which have replyOpen false.
+			if canceling || replyOpen || time.Since(lastActivity) < statusDebounce {
+				continue
+			}
+			spinIdx++
+			fmt.Fprintf(out, "\r\x1b[K%s %s",
+				accent(spinnerFrames[spinIdx%len(spinnerFrames)]),
+				muted(statusBody(label, time.Since(lastActivity))))
+			statusShown = true
 		case ev, ok := <-keys:
 			if !ok {
 				keys = nil // stdin closed; let the turn finish via frames
@@ -106,7 +142,7 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 			if !canceling && (ev.kind == keyEsc || ev.kind == keyCtrlC) {
 				_ = conn.WriteFrame(transport.Frame{Type: transport.TypeCancel})
 				canceling = true
-				stopSp()
+				clearStatus()
 				finishLive()
 				fmt.Fprintf(out, "\n%s\n", muted("⎋ 正在取消…"))
 			}
@@ -117,13 +153,14 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 			if fe.err != nil {
 				return fe.err
 			}
-			stopSp()
+			activity()
 			switch f := fe.frame; f.Type {
 			case transport.TypeAssistantDelta:
 				if canceling {
 					continue
 				}
 				finishLive()
+				label = "思考中"
 				s, _ := f.Text()
 				if !replyOpen {
 					fmt.Fprint(out, "\n")
@@ -136,15 +173,16 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 				}
 				finishLive()
 				replyOpen = false
+				label = "执行中"
 				var p transport.ToolStartPayload
 				_ = f.Decode(&p)
 				fmt.Fprintf(out, "\n%s %s%s\n", accent("⏺"), bold(p.Tool), muted("("+p.Command+")"))
-				sp = startSpinner("执行中…")
 			case transport.TypeToolOutput:
 				if canceling {
 					continue
 				}
 				replyOpen = false
+				label = "执行中"
 				if live == nil {
 					cols, rows, _ := term.GetSize(int(os.Stdout.Fd()))
 					live = newLiveOutput(out, true, cols, rows)
@@ -168,6 +206,7 @@ func drainRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan keyEve
 				if err := conn.WriteFrame(reply); err != nil {
 					return err
 				}
+				lastActivity = time.Now() // the user may have paused; don't pop a stale-elapsed spinner
 			case transport.TypeError:
 				finishLive()
 				s, _ := f.Text()

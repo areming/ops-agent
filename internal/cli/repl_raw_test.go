@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/areming/ops-agent/internal/transport"
 )
@@ -270,6 +271,46 @@ func TestDrainRawEscSendsCancel(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "should be hidden") {
 		t.Errorf("output not suppressed after cancel: %q", out.String())
+	}
+}
+
+// TestStatusBody checks the animated status text: a plain label under one
+// second, then a climbing elapsed-seconds counter (what signals "not frozen").
+func TestStatusBody(t *testing.T) {
+	if got := statusBody("执行中", 200*time.Millisecond); got != "执行中…" {
+		t.Errorf("sub-second = %q, want 执行中…", got)
+	}
+	if got := statusBody("思考中", 12*time.Second); got != "思考中… 12s" {
+		t.Errorf("with elapsed = %q, want 思考中… 12s", got)
+	}
+}
+
+// TestDrainRawAnimatesDuringSilentGap proves the status line fills a silent
+// gap: after a tool starts and then nothing arrives, the debounced ticker must
+// draw an "执行中" indicator so the session never looks frozen.
+func TestDrainRawAnimatesDuringSilentGap(t *testing.T) {
+	a, c := net.Pipe()
+	t.Cleanup(func() { a.Close(); c.Close() })
+	conn := transport.NewConn(a)
+	_ = c
+
+	frames := make(chan frameOrErr, 2)
+	keys := make(chan keyEvent)
+	var out bytes.Buffer
+
+	done := make(chan error, 1)
+	go func() { done <- drainRaw(conn, frames, keys, &out) }()
+
+	ts, _ := transport.PayloadFrame(transport.TypeToolStart, transport.ToolStartPayload{Tool: "shell", Command: "sleep 1"})
+	frames <- frameOrErr{frame: ts}
+	time.Sleep(350 * time.Millisecond) // longer than debounce + a couple of ticks
+	frames <- frameOrErr{frame: transport.Frame{Type: transport.TypeDone}}
+
+	if err := <-done; err != nil {
+		t.Fatalf("drainRaw: %v", err)
+	}
+	if !strings.Contains(out.String(), "执行中") {
+		t.Errorf("expected an 执行中 status during the silent gap, got %q", out.String())
 	}
 }
 

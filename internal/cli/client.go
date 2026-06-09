@@ -379,11 +379,13 @@ func printSlashHelpTo(w io.Writer) {
 }
 
 // drain handles frames for one turn until Done. It shows a spinner on stderr
-// during the silent gaps — waiting on the model's first token, and while a
-// command runs — so the session never looks frozen. The spinner is cleared the
-// instant any frame arrives, and never runs while assistant text is streaming.
+// during every silent gap — waiting on the model's first token, while a command
+// runs, and between tool rounds while the model thinks — so the session never
+// looks frozen. The spinner is cleared the instant any frame arrives, and never
+// runs while assistant text is streaming. (The raw path uses a richer inline
+// status line; this is the non-TTY / cooked fallback.)
 func drain(conn *transport.Conn, in *bufio.Scanner) error {
-	sp := startSpinner("思考中…")
+	sp := startSpinner("思考中")
 	var live *liveOutput
 	finishLive := func() {
 		if live != nil {
@@ -414,7 +416,7 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 			var p transport.ToolStartPayload
 			_ = f.Decode(&p)
 			fmt.Printf("\n%s %s%s\n", accent("⏺"), bold(p.Tool), muted("("+p.Command+")"))
-			sp = startSpinner("执行中…")
+			sp = startSpinner("执行中")
 		case transport.TypeToolOutput:
 			replyOpen = false
 			if live == nil {
@@ -423,6 +425,10 @@ func drain(conn *transport.Conn, in *bufio.Scanner) error {
 			}
 			s, _ := f.Text()
 			live.feed([]byte(s))
+			// Keep an indicator alive: a command may go quiet, and the model still
+			// has to read the result and think before the next frame — both are
+			// silent gaps the next blocking read would otherwise show as frozen.
+			sp = startSpinner("执行中")
 		case transport.TypeConfirmRequest:
 			finishLive()
 			replyOpen = false
@@ -575,12 +581,41 @@ func askConfirmLine(in *bufio.Scanner, p transport.ConfirmRequestPayload) (appro
 	}
 }
 
+// spinnerFrames is the braille cycle shared by the animated indicators (the
+// stderr spinner on the cooked path and the synchronous status line on the raw
+// path), so both read identically.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+const (
+	// spinnerInterval is the animation tick.
+	spinnerInterval = 120 * time.Millisecond
+	// statusDebounce is how long a turn must be quiet before the raw-path status
+	// line appears, so it fills genuine waits without flickering between the
+	// bursts of streaming text or pouring output.
+	statusDebounce = 150 * time.Millisecond
+)
+
+// statusBody composes the text of an animated status line (without the leading
+// spinner glyph): a phase label and, once the wait passes one second, the
+// elapsed seconds — e.g. "执行中…" then "执行中… 12s". The climbing counter is
+// what makes a silent wait read as "working" rather than "frozen". Kept pure
+// for testing.
+func statusBody(label string, elapsed time.Duration) string {
+	if secs := int(elapsed.Seconds()); secs >= 1 {
+		return fmt.Sprintf("%s… %ds", label, secs)
+	}
+	return label + "…"
+}
+
 // spinner animates a one-line status indicator on stderr. It is purely
 // cosmetic — output goes to stderr so it never mixes into piped stdout, and it
-// only animates when stderr is an interactive terminal.
+// only animates when stderr is an interactive terminal. The raw path uses an
+// inline, synchronous status line instead (see drainRaw); this drives the
+// cooked path, whose blocking frame read can't host an in-loop ticker.
 type spinner struct {
-	quit chan struct{}
-	done chan struct{}
+	quit  chan struct{}
+	done  chan struct{}
+	start time.Time
 }
 
 // startSpinner begins animating label until stop is called. It returns nil
@@ -589,18 +624,18 @@ func startSpinner(label string) *spinner {
 	if !term.IsTerminal(int(os.Stderr.Fd())) {
 		return nil
 	}
-	s := &spinner{quit: make(chan struct{}), done: make(chan struct{})}
+	s := &spinner{quit: make(chan struct{}), done: make(chan struct{}), start: time.Now()}
 	go func() {
 		defer close(s.done)
-		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-		tk := time.NewTicker(120 * time.Millisecond)
+		tk := time.NewTicker(spinnerInterval)
 		defer tk.Stop()
 		for i := 0; ; i++ {
 			select {
 			case <-s.quit:
 				return
 			case <-tk.C:
-				fmt.Fprintf(os.Stderr, "\r%s %s ", frames[i%len(frames)], label)
+				fmt.Fprintf(os.Stderr, "\r%s %s ",
+					spinnerFrames[i%len(spinnerFrames)], statusBody(label, time.Since(s.start)))
 			}
 		}
 	}()
