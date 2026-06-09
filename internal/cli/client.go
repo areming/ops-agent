@@ -375,6 +375,8 @@ func printSlashHelpTo(w io.Writer) {
   /clear           清空当前对话
   /help            显示本帮助
   /exit            退出
+
+提示：输入 / 后按 Tab 补全命令名（内置和自定义命令都补）
 `)
 }
 

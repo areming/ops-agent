@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -42,10 +43,11 @@ func replRaw(conn *transport.Conn, label string) error {
 	defer stopFrames()
 
 	prompt := fmt.Sprintf("%s %s ", muted("["+label+"]"), accent("›"))
+	complete := commandCompleter(conn, frames)
 	ed := &lineEditor{}
 	for {
 		fmt.Fprintf(out, "\n%s", prompt)
-		line, outcome := readLine(ed, keys, frames, out)
+		line, outcome := readLine(ed, keys, frames, out, prompt, complete)
 		if outcome != lineSubmit {
 			return nil // Ctrl-D/Ctrl-C at the prompt, or the connection dropped
 		}
@@ -340,14 +342,21 @@ const (
 )
 
 // readLine reads one prompt line, echoing edits to out. It also watches frames
-// so a connection drop at the prompt ends the session instead of hanging.
-func readLine(ed *lineEditor, keys <-chan keyEvent, frames <-chan frameOrErr, out io.Writer) (string, lineOutcome) {
+// so a connection drop at the prompt ends the session instead of hanging. Tab
+// triggers command completion via complete (inert when complete is nil).
+func readLine(ed *lineEditor, keys <-chan keyEvent, frames <-chan frameOrErr, out io.Writer, prompt string, complete completer) (string, lineOutcome) {
 	ed.reset()
 	for {
 		select {
 		case ev, ok := <-keys:
 			if !ok {
 				return "", lineExit
+			}
+			if ev.kind == keyTab {
+				if complete != nil {
+					ed.complete(complete, prompt, out)
+				}
+				continue
 			}
 			switch ed.feed(ev, out) {
 			case editSubmit:
@@ -444,6 +453,121 @@ func (e *lineEditor) feed(ev keyEvent, w io.Writer) editResult {
 	}
 }
 
+// --- command completion ------------------------------------------------------
+
+// completer yields, for the partial command name `token` (the text after a
+// leading '/'), the text to append toward the matching commands and the full
+// list of matches (for display when several share the prefix).
+type completer func(token string) (extend string, matches []string)
+
+// builtinCommandNames are the slash commands the REPL handles itself; Tab
+// completes these alongside the agent's custom commands.
+var builtinCommandNames = []string{"clear", "commands", "exit", "help", "logs", "model", "yolo"}
+
+// commandCompleter builds the Tab completer for the prompt: it merges the
+// built-in slash commands with the agent's current custom commands (fetched live
+// over a control frame, so a *.md added mid-session completes too) and matches
+// the typed prefix against them. A fetch error degrades to built-ins only.
+func commandCompleter(conn *transport.Conn, frames <-chan frameOrErr) completer {
+	return func(token string) (string, []string) {
+		names := append([]string(nil), builtinCommandNames...)
+		if lr, err := fetchCommands(framesControl(conn, frames)); err == nil {
+			for _, c := range lr.Commands {
+				names = append(names, c.Name)
+			}
+		}
+		sort.Strings(names)
+		return completeCommand(token, names)
+	}
+}
+
+// completeCommand matches token (case-insensitively) against candidate command
+// names. matches are the candidates having token as a prefix, in the given
+// order; extend is the extra text to append to token to reach the matches'
+// longest common prefix — empty when token already is that prefix, so the caller
+// knows to list the matches rather than grow the line.
+func completeCommand(token string, candidates []string) (extend string, matches []string) {
+	lt := strings.ToLower(token)
+	for _, c := range candidates {
+		if strings.HasPrefix(strings.ToLower(c), lt) {
+			matches = append(matches, c)
+		}
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	lcp := []rune(longestCommonPrefix(matches))
+	if tr := []rune(token); len(lcp) > len(tr) {
+		extend = string(lcp[len(tr):])
+	}
+	return extend, matches
+}
+
+// longestCommonPrefix returns the longest rune prefix shared by every string,
+// comparing by rune so multibyte (CJK) names are never split mid-character.
+func longestCommonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	prefix := []rune(ss[0])
+	for _, s := range ss[1:] {
+		rs := []rune(s)
+		n := 0
+		for n < len(prefix) && n < len(rs) && prefix[n] == rs[n] {
+			n++
+		}
+		prefix = prefix[:n]
+		if len(prefix) == 0 {
+			break
+		}
+	}
+	return string(prefix)
+}
+
+// complete handles a Tab at the prompt. It acts only while a slash command's
+// name is being typed (buffer starts with '/' and holds no space yet); Tab is
+// inert for plain text or once an argument has begun. One growth path fills the
+// text in (adding a trailing space on a unique full match so an argument can
+// follow); several matches are listed and the prompt reprinted; no match prints
+// a short notice. The prompt is reprinted with the current buffer so editing
+// continues seamlessly.
+func (e *lineEditor) complete(c completer, prompt string, w io.Writer) {
+	line := string(e.buf)
+	if !strings.HasPrefix(line, "/") || strings.ContainsRune(line, ' ') {
+		return
+	}
+	extend, matches := c(line[1:])
+	switch {
+	case len(matches) == 0:
+		e.reprintAfter(muted("（无匹配命令）"), prompt, w)
+	case extend != "":
+		e.append(extend, w)
+		if len(matches) == 1 {
+			e.append(" ", w) // unique full match: room for an argument
+		}
+	case len(matches) == 1:
+		e.append(" ", w) // already fully typed; just open the argument slot
+	default:
+		var b strings.Builder
+		for _, m := range matches {
+			fmt.Fprintf(&b, "  %s%s\n", accent("/"), m)
+		}
+		e.reprintAfter(strings.TrimRight(b.String(), "\n"), prompt, w)
+	}
+}
+
+// append adds s to the buffer and echoes it.
+func (e *lineEditor) append(s string, w io.Writer) {
+	e.buf = append(e.buf, []rune(s)...)
+	io.WriteString(w, s)
+}
+
+// reprintAfter drops to a new line to show block, then reprints the prompt and
+// the in-progress line so the cursor lands back where the user was typing.
+func (e *lineEditor) reprintAfter(block, prompt string, w io.Writer) {
+	fmt.Fprintf(w, "\n%s\n%s%s", block, prompt, string(e.buf))
+}
+
 // eraseCells removes the last glyph (1 or 2 cells wide) from the screen.
 func eraseCells(w io.Writer, width int) {
 	if width < 1 {
@@ -492,6 +616,7 @@ type keyKind int
 const (
 	keyRune keyKind = iota
 	keyEnter
+	keyTab
 	keyBackspace
 	keyEsc
 	keyCtrlC
@@ -580,6 +705,8 @@ func decodeKey(br *bufio.Reader) (keyEvent, error) {
 		}
 	case b == '\r' || b == '\n':
 		return keyEvent{kind: keyEnter}, nil
+	case b == '\t':
+		return keyEvent{kind: keyTab}, nil
 	case b == 0x7f || b == 0x08: // DEL or Backspace
 		return keyEvent{kind: keyBackspace}, nil
 	case b == 0x03:

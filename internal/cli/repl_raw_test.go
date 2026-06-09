@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -198,6 +199,7 @@ func TestDecodeKeySingles(t *testing.T) {
 		{"ascii", []byte("a"), keyEvent{kind: keyRune, r: 'a'}},
 		{"cr", []byte("\r"), keyEvent{kind: keyEnter}},
 		{"lf", []byte("\n"), keyEvent{kind: keyEnter}},
+		{"tab", []byte("\t"), keyEvent{kind: keyTab}},
 		{"del", []byte{0x7f}, keyEvent{kind: keyBackspace}},
 		{"bs", []byte{0x08}, keyEvent{kind: keyBackspace}},
 		{"ctrl-c", []byte{0x03}, keyEvent{kind: keyCtrlC}},
@@ -311,6 +313,95 @@ func TestDrainRawAnimatesDuringSilentGap(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "执行中") {
 		t.Errorf("expected an 执行中 status during the silent gap, got %q", out.String())
+	}
+}
+
+func TestCompleteCommand(t *testing.T) {
+	// built-ins plus a couple of custom commands sharing a prefix.
+	cands := []string{"clear", "commands", "exit", "help", "logs", "model", "yolo", "restart-db", "restart-nginx"}
+	cases := []struct {
+		name       string
+		token      string
+		wantExtend string
+		wantCount  int
+	}{
+		{"unique grows fully", "hel", "p", 1},
+		{"already complete unique", "help", "", 1},
+		{"no match", "zzz", "", 0},
+		{"shared prefix grows to common", "r", "estart-", 2},
+		{"at common prefix lists", "restart-", "", 2},
+		{"case insensitive", "HE", "lp", 1},
+		{"two builtins common prefix", "c", "", 2}, // clear, commands → lcp "c"
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			extend, matches := completeCommand(c.token, cands)
+			if extend != c.wantExtend {
+				t.Errorf("extend = %q, want %q", extend, c.wantExtend)
+			}
+			if len(matches) != c.wantCount {
+				t.Errorf("matches = %v, want %d of them", matches, c.wantCount)
+			}
+		})
+	}
+}
+
+func TestLineEditorComplete(t *testing.T) {
+	// A completer over a fixed candidate set, prefix-matched like the real one.
+	cands := []string{"commands", "clear", "model", "restart-db", "restart-nginx"}
+	comp := func(token string) (string, []string) { return completeCommand(token, cands) }
+	const prompt = "> "
+
+	// Unique match fills in the rest and opens an argument slot with a space.
+	ed := &lineEditor{}
+	ed.reset()
+	ed.append("/mod", io.Discard)
+	var echo bytes.Buffer
+	ed.complete(comp, prompt, &echo)
+	if ed.line() != "/model " {
+		t.Errorf("unique completion line = %q, want %q", ed.line(), "/model ")
+	}
+
+	// Several matches: line is grown only to the common prefix, then listed.
+	ed.reset()
+	ed.append("/r", io.Discard)
+	echo.Reset()
+	ed.complete(comp, prompt, &echo)
+	if ed.line() != "/restart-" {
+		t.Errorf("ambiguous completion line = %q, want %q", ed.line(), "/restart-")
+	}
+	// A second Tab at the common prefix lists both and reprints the prompt.
+	echo.Reset()
+	ed.complete(comp, prompt, &echo)
+	if ed.line() != "/restart-" {
+		t.Errorf("line changed on list = %q, want unchanged", ed.line())
+	}
+	if !strings.Contains(echo.String(), "restart-db") || !strings.Contains(echo.String(), "restart-nginx") {
+		t.Errorf("listing missing candidates: %q", echo.String())
+	}
+	if !strings.Contains(echo.String(), prompt+"/restart-") {
+		t.Errorf("listing should reprint prompt + line: %q", echo.String())
+	}
+
+	// No match: line is untouched, a notice is shown.
+	ed.reset()
+	ed.append("/zzz", io.Discard)
+	echo.Reset()
+	ed.complete(comp, prompt, &echo)
+	if ed.line() != "/zzz" {
+		t.Errorf("no-match line = %q, want unchanged", ed.line())
+	}
+	if !strings.Contains(echo.String(), "无匹配命令") {
+		t.Errorf("no-match should print a notice: %q", echo.String())
+	}
+
+	// Inert once an argument has begun (a space is present).
+	ed.reset()
+	ed.append("/model gpt", io.Discard)
+	echo.Reset()
+	ed.complete(comp, prompt, &echo)
+	if ed.line() != "/model gpt" || echo.Len() != 0 {
+		t.Errorf("Tab in args should be inert: line=%q echo=%q", ed.line(), echo.String())
 	}
 }
 
