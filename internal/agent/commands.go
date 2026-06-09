@@ -39,7 +39,7 @@ func (srv *server) loadCommands() []memory.Command {
 // commandList returns the saved commands (JSON CommandListReply) for /help and
 // the /commands listing.
 func (srv *server) commandList() (string, error) {
-	var reply transport.CommandListReply
+	reply := transport.CommandListReply{Dir: srv.commandsDir()}
 	for _, c := range srv.loadCommands() {
 		reply.Commands = append(reply.Commands, transport.CommandInfo{Name: c.Name, Description: c.Description})
 	}

@@ -31,6 +31,11 @@ func TestCommandList(t *testing.T) {
 	if len(lr.Commands) != 1 || lr.Commands[0].Name != "deploy" || lr.Commands[0].Description != "ship it" {
 		t.Fatalf("unexpected command list: %+v", lr.Commands)
 	}
+	// The reply names the directory so the client can tell the operator exactly
+	// where to drop *.md files (a local session and the daemon differ).
+	if lr.Dir != dir {
+		t.Fatalf("commandList dir = %q, want %q", lr.Dir, dir)
+	}
 }
 
 func TestBuildCommandPrompt(t *testing.T) {

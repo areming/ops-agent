@@ -95,6 +95,12 @@ type CommandInfo struct {
 // for CmdCommandList.
 type CommandListReply struct {
 	Commands []CommandInfo `json:"commands"`
+	// Dir is the absolute directory the answering agent reads *.md command
+	// files from. It is surfaced to the operator because a local in-process
+	// session and the resident daemon resolve different state dirs — a file
+	// dropped in the wrong one silently never loads, so the client names the
+	// real path instead of a vague "commands 目录".
+	Dir string `json:"dir,omitempty"`
 }
 
 // ModelProfile is one saved model configuration in a ModelListReply.
