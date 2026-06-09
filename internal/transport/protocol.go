@@ -37,6 +37,13 @@ const (
 	// the model still receives the full result separately. Payload is a JSON
 	// string (the raw output chunk).
 	TypeToolOutput FrameType = "tool_output" // agent->cli, display only
+
+	// TypeRunCommand triggers a saved custom command (a `/name` typed at the
+	// prompt that is not a built-in). Unlike a control request, it opens a full
+	// turn: the agent injects the command's definition as the turn's input and
+	// streams the usual deltas / tool activity / confirmations, ending with Done.
+	// Payload is a RunCommandPayload.
+	TypeRunCommand FrameType = "run_command" // cli->agent
 )
 
 // ControlRequestPayload carries a slash command and its optional argument
@@ -63,7 +70,32 @@ const (
 	CmdModelSwitch = "model.switch" // Arg = profile id (or, off-TTY, a name to match)
 	CmdModelAdd    = "model.add"    // Arg = JSON ModelAddRequest
 	CmdModelDelete = "model.delete" // Arg = profile id
+
+	// CmdCommandList lists the saved custom commands so the client can show them
+	// in /help and /commands. The agent replies with a JSON CommandListReply in
+	// the control reply Text.
+	CmdCommandList = "command.list"
 )
+
+// RunCommandPayload names the custom command to run and carries any extra text
+// typed after it (e.g. `/deploy staging` → Name="deploy", Args="staging").
+type RunCommandPayload struct {
+	Name string `json:"name"`
+	Args string `json:"args,omitempty"`
+}
+
+// CommandInfo is one custom command in a CommandListReply: its trigger name and
+// one-line description, for display only.
+type CommandInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// CommandListReply is the JSON the agent returns (in the control reply Text)
+// for CmdCommandList.
+type CommandListReply struct {
+	Commands []CommandInfo `json:"commands"`
+}
 
 // ModelProfile is one saved model configuration in a ModelListReply.
 type ModelProfile struct {

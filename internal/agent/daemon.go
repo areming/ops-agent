@@ -220,6 +220,16 @@ func (srv *server) handle(nc net.Conn) {
 				log.Printf("turn: %v", err)
 				return
 			}
+		case transport.TypeRunCommand:
+			var p transport.RunCommandPayload
+			if err := f.Decode(&p); err != nil {
+				writeError(conn, "decode payload: "+err.Error())
+				continue
+			}
+			if err := srv.runCommandTurn(ctx, conn, sess, frames, p); err != nil {
+				log.Printf("command turn: %v", err)
+				return
+			}
 		case transport.TypeControlRequest:
 			if err := srv.handleControl(ctx, conn, sess, f); err != nil {
 				log.Printf("control: %v", err)
@@ -254,6 +264,9 @@ func (srv *server) handleControl(ctx context.Context, conn *transport.Conn, sess
 		return controlReply(conn, text, errString(err))
 	case transport.CmdModelDelete:
 		text, err := srv.modelDelete(req.Arg)
+		return controlReply(conn, text, errString(err))
+	case transport.CmdCommandList:
+		text, err := srv.commandList()
 		return controlReply(conn, text, errString(err))
 	case "logs":
 		text, err := srv.controlLogs(ctx, req.Arg)
@@ -404,6 +417,13 @@ func (srv *server) stateDir() string {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	return srv.cfg.StateDir
+}
+
+// commandsDir returns the custom-command directory under the lock.
+func (srv *server) commandsDir() string {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	return srv.cfg.CommandsDir
 }
 
 // resolveProfileID matches arg against a saved profile by id, then

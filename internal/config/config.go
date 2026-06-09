@@ -35,7 +35,8 @@ type Config struct {
 	KeystorePath  string
 	MasterKeyPath string
 	KnowledgeDir  string
-	HistoryDepth  int // messages reloaded into a new session from history
+	CommandsDir   string // *.md custom-command definitions (/name triggers)
+	HistoryDepth  int    // messages reloaded into a new session from history
 
 	Patrol PatrolConfig
 }
@@ -167,6 +168,7 @@ func Load() Config {
 		KeystorePath:  filepath.Join(stateDir, "keystore.json"),
 		MasterKeyPath: filepath.Join(stateDir, "master.key"),
 		KnowledgeDir:  getenv("OPSAGENT_KNOWLEDGE_DIR", filepath.Join(stateDir, "knowledge")),
+		CommandsDir:   getenv("OPSAGENT_COMMANDS_DIR", filepath.Join(stateDir, "commands")),
 		HistoryDepth:  getenvInt("OPSAGENT_HISTORY", 50),
 		Patrol:        loadPatrol(),
 	}

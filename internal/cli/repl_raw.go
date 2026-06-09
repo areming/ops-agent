@@ -242,6 +242,7 @@ func handleSlashRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan 
 	switch cmd {
 	case "help", "?":
 		printSlashHelpTo(out)
+		_ = printCommands(framesControl(conn, frames), out, true) // append custom commands, best-effort
 		return false, nil
 	case "quit", "exit", "q":
 		return true, nil
@@ -259,11 +260,17 @@ func handleSlashRaw(conn *transport.Conn, frames <-chan frameOrErr, keys <-chan 
 			return false, nil
 		}
 		return false, runModelPanel(rt, keys, out)
+	case "commands", "cmds":
+		return false, printCommands(framesControl(conn, frames), out, false)
 	case "logs", "yolo":
 		return false, sendControlRaw(conn, frames, out, cmd, arg)
 	default:
-		fmt.Fprintf(out, "未知命令 /%s（试试 /help）\n", cmd)
-		return false, nil
+		// Not a built-in: forward as a custom command, then drain the turn it
+		// opens. An unknown name comes back as an error frame from the agent.
+		if err := runCommandFrame(conn, cmd, arg); err != nil {
+			return false, err
+		}
+		return false, drainRaw(conn, frames, keys, out)
 	}
 }
 

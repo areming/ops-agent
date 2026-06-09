@@ -291,7 +291,7 @@ func replCooked(conn *transport.Conn, label string) error {
 		}
 		line := in.Text()
 		if strings.HasPrefix(strings.TrimSpace(line), "/") {
-			quit, err := handleSlash(conn, strings.TrimSpace(line))
+			quit, err := handleSlash(conn, in, strings.TrimSpace(line))
 			if err != nil {
 				return err
 			}
@@ -316,14 +316,16 @@ func replCooked(conn *transport.Conn, label string) error {
 // handleSlash interprets a /command typed at the prompt. Local-only commands
 // (/help, /exit) are handled here; /model, /logs, /clear and /yolo become
 // control frames to the connected agent — so they act on whichever machine the
-// session is talking to (local or remote). quit=true ends the session.
-func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
+// session is talking to (local or remote). Any other /name is forwarded as a
+// custom command (run on the agent). quit=true ends the session.
+func handleSlash(conn *transport.Conn, in *bufio.Scanner, line string) (quit bool, err error) {
 	cmd, arg, _ := strings.Cut(strings.TrimPrefix(line, "/"), " ")
 	cmd = strings.ToLower(cmd)
 	arg = strings.TrimSpace(arg)
 	switch cmd {
 	case "help", "?":
 		printSlashHelp()
+		_ = printCommands(connControl(conn), os.Stdout, true) // append custom commands, best-effort
 		return false, nil
 	case "quit", "exit", "q":
 		return true, nil
@@ -334,11 +336,17 @@ func handleSlash(conn *transport.Conn, line string) (quit bool, err error) {
 		// Non-TTY/cooked path: text list, or switch-by-name when an arg is given.
 		// The interactive panel runs on the raw path (handleSlashRaw).
 		return false, modelManageText(connControl(conn), os.Stdout, arg)
+	case "commands", "cmds":
+		return false, printCommands(connControl(conn), os.Stdout, false)
 	case "logs", "yolo":
 		return false, sendControl(conn, cmd, arg)
 	default:
-		fmt.Printf("未知命令 /%s（试试 /help）\n", cmd)
-		return false, nil
+		// Not a built-in: forward as a custom command, then drain the turn it
+		// opens. An unknown name comes back as an error frame from the agent.
+		if err := runCommandFrame(conn, cmd, arg); err != nil {
+			return false, err
+		}
+		return false, drain(conn, in)
 	}
 }
 
@@ -361,6 +369,7 @@ func printSlashHelp() { printSlashHelpTo(os.Stdout) }
 func printSlashHelpTo(w io.Writer) {
 	fmt.Fprint(w, `命令：
   /model [名称]    模型面板：↑/↓ 选择 · Enter 切换 · d 删除 · 末行新增；带名称直接切换
+  /commands        列出自定义命令（用 /name 触发；定义放 agent 的 commands 目录）
   /logs [N]        查看最近 N 条操作日志（默认 20）
   /yolo [on|off]   自动放行（默认开）：开=非危险操作直接执行，关=逐条确认；危险命令始终确认
   /clear           清空当前对话
